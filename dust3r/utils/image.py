@@ -320,3 +320,92 @@ def get_overlaied_gif(folder, img_format="frame_*.png", mask_format="dynamic_mas
         plt.close(fig)  # Close the figure to free memory
     # Save frames as a GIF using imageio
     imageio.mimsave(os.path.join(folder,output_path), frames, fps=10)
+
+
+
+def load_masks(folder, image_list, size, square_ok=False, verbose=True):
+    """
+    Open and process mask images while aligning them with an images list.
+    If a mask for an image is missing, appends None to ensure alignment.
+
+    Args:
+        folder_or_list (str or list): A folder path containing mask images or a list of mask paths.
+        image_list (list): A list of image filenames (without extensions) to align masks with.
+        size (int): Target size for resizing the masks.
+        square_ok (bool): Whether to allow square masks without additional cropping.
+        verbose (bool): Whether to print detailed logs.
+
+    Returns:
+        list: A list aligned with the image_list, where each entry is:
+            - Processed mask data if the mask exists.
+            - None if the mask is missing.
+    """
+    aligned_masks_total = []  # Final list aligned with image_list
+
+    aligned_masks = []  # Masks aligned with the current image_list
+    if isinstance(folder, str):
+        if verbose:
+            print(f'>> Loading masks from {folder}')
+        root, folder_content = folder, sorted(os.listdir(folder))
+    elif isinstance(folder, list):
+        if verbose:
+            print(f'>> Loading a list of {len(folder)} masks')
+        root, folder_content = '', folder
+    else:
+        raise ValueError(f'Invalid input: {folder=} ({type(folder)})')
+
+    # Supported mask extensions
+    supported_masks_extensions = ['.png', '.bmp', '.jpg', '.jpeg']
+    supported_masks_extensions = tuple(supported_masks_extensions)
+
+    mask_paths = folder
+
+    # Normalize paths to use forward slashes for compatibility
+    mask_paths = [path.replace("\\", "/") for path in mask_paths]
+    
+    # Sort the paths to ensure consistent ordering
+    mask_paths.sort()
+
+    mask_filenames = {os.path.splitext(os.path.basename(path))[0]: path for path in mask_paths}
+    img_filenames = {os.path.splitext(os.path.basename(path))[0]: path for path in image_list}
+
+    # Align masks with the image list
+    for img_name in img_filenames:
+        mask_path = mask_filenames.get(img_name, None)
+
+        if mask_path:
+            # Load and process the mask
+            mask = PIL.Image.open(mask_path).convert('L')  # Convert to grayscale
+            W1, H1 = mask.size
+
+            # Resize and crop
+            if size == 224:
+                mask = _resize_pil_image(mask, round(size * max(W1 / H1, H1 / W1)))
+            else:
+                mask = _resize_pil_image(mask, size)
+
+            W, H = mask.size
+            cx, cy = W // 2, H // 2
+
+            if size == 224:
+                half = min(cx, cy)
+                mask = mask.crop((cx - half, cy - half, cx + half, cy + half))
+            else:
+                halfw, halfh = ((2 * cx) // 16) * 8, ((2 * cy) // 16) * 8
+                if not square_ok and W == H:
+                    halfh = 3 * halfw // 4
+                mask = mask.crop((cx - halfw, cy - halfh, cx + halfw, cy + halfh))
+
+            # Convert to NumPy array
+            mask_data = np.array(mask, dtype=np.uint8)
+
+            if verbose:
+                print(f' - Found mask for {img_name}: {mask_path}, resized to {W}x{H}')
+            aligned_masks.append(mask_data)  # Append processed mask
+        else:
+            if verbose:
+                print(f' - No mask found for {img_name}')
+            aligned_masks.append(None)  # Append None if mask is missing
+    aligned_masks_total.append(aligned_masks)
+
+    return aligned_masks_total
