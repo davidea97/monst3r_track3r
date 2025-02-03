@@ -4,7 +4,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from tqdm import tqdm
 import contextlib
-
+import os
+from PIL import Image
 from dust3r.cloud_opt.base_opt import BasePCOptimizer, edge_str
 from dust3r.cloud_opt.pair_viewer import PairViewer
 from dust3r.utils.geometry import xy_grid, geotrf, depthmap_to_pts3d
@@ -33,7 +34,7 @@ class PointCloudOptimizer(BasePCOptimizer):
     Graph edges: observations = (pred1, pred2)
     """
 
-    def __init__(self, *args, optimize_pp=False, focal_break=20, shared_focal=False, flow_loss_fn='smooth_l1', flow_loss_weight=0.0, 
+    def __init__(self, *args, optimize_pp=False, focal_break=20, shared_focal=False, intrinsic_params=None, dist_coeffs=None, flow_loss_fn='smooth_l1', flow_loss_weight=0.0, 
                  depth_regularize_weight=0.0, num_total_iter=300, temporal_smoothing_weight=0, translation_weight=0.1, flow_loss_start_epoch=0.15, flow_loss_thre=50,
                  sintel_ckpt=False, use_self_mask=False, pxl_thre=50, sam2_mask_refine=True, motion_mask_thre=0.35, batchify=True, **kwargs):
         super().__init__(*args, **kwargs)
@@ -56,12 +57,24 @@ class PointCloudOptimizer(BasePCOptimizer):
         self.im_poses = nn.ParameterList(self.rand_pose(self.POSE_DIM) for _ in range(self.n_imgs))  # camera poses
         self.shared_focal = shared_focal
         if self.shared_focal:
-            self.im_focals = nn.ParameterList(torch.FloatTensor(
-                [self.focal_break*np.log(max(H, W))]) for H, W in self.imshapes[:1])  # camera intrinsics
+            if intrinsic_params is None:
+                self.im_focals = nn.ParameterList(
+                    [nn.Parameter(torch.FloatTensor([self.focal_break * np.log(max(H, W))]), requires_grad=True) for H, W in self.imshapes[:1]]
+                )
+            else:
+                # Use provided focal length within intrinsic_params
+                focal = intrinsic_params['focal']
+                self.im_focals = nn.ParameterList(
+                    [nn.Parameter(torch.FloatTensor([self.focal_break*np.log(focal)]), requires_grad=False) for _ in range(self.n_imgs)]
+                )
+
         else:
-            self.im_focals = nn.ParameterList(torch.FloatTensor(
-                [self.focal_break*np.log(max(H, W))]) for H, W in self.imshapes)  # camera intrinsics
+            self.im_focals = nn.ParameterList(
+                [nn.Parameter(torch.FloatTensor([self.focal_break * np.log(max(H, W))]), requires_grad=True) for H, W in self.imshapes]
+            )
+
         self.im_pp = nn.ParameterList(torch.zeros((2,)) for _ in range(self.n_imgs))  # camera intrinsics
+        # print("Self.im_pp: ", self.im_pp[0])
         self.im_pp.requires_grad_(optimize_pp)
 
         self.imshape = self.imshapes[0]
@@ -224,6 +237,10 @@ class PointCloudOptimizer(BasePCOptimizer):
             self.dynamic_masks[i] = torch.stack(self.dynamic_masks[i]).mean(dim=0) > self.motion_mask_thre
 
     def refine_motion_mask_w_sam2(self):
+        """
+        Refine the motion mask using SAM2.
+        """
+        print('Refining motion mask with SAM2...')
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
         # Save previous TF32 settings
@@ -241,6 +258,27 @@ class PointCloudOptimizer(BasePCOptimizer):
                 predictor = build_sam2_video_predictor(model_cfg, sam2_checkpoint, device=device)
                 frame_tensors = torch.from_numpy(np.array((self.imgs))).permute(0, 3, 1, 2).to(device)
                 inference_state = predictor.init_state(video_path=frame_tensors)
+                
+                # DAVIDE: save the init masks
+                save_folder = 'init_dynamic_masks'
+                os.makedirs(save_folder, exist_ok=True)
+                for i in range(self.n_imgs):
+                    dynamic_mask_np = self.dynamic_masks[i].cpu().numpy()
+                    count = np.count_nonzero(dynamic_mask_np)
+                    save_path = os.path.join(save_folder, f'dynamic_mask_{i}.png')
+
+                    # Create an image with colored dynamic pixels and black static pixels
+                    img1_np = self.imgs[i].astype(np.uint8)
+                    colored_dynamic_pixels = np.zeros_like(img1_np)
+                    colored_dynamic_pixels[dynamic_mask_np > 0.99] = [255, 255, 255]
+
+                    # Save the image
+                    dynamic_pixels_img = Image.fromarray(colored_dynamic_pixels)
+                    dynamic_pixels_img.save(save_path)
+                ###################
+
+
+
                 mask_list = [self.dynamic_masks[i] for i in range(self.n_imgs)]
                 
                 ann_obj_id = 1
@@ -256,6 +294,8 @@ class PointCloudOptimizer(BasePCOptimizer):
                             obj_id=ann_obj_id,
                             mask=mask,
                         )
+
+
                 video_segments = {}
                 for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(inference_state, start_frame_idx=0):
                     video_segments[out_frame_idx] = {
@@ -291,7 +331,27 @@ class PointCloudOptimizer(BasePCOptimizer):
                     self.sam2_dynamic_masks[i] = torch.from_numpy(self.sam2_dynamic_masks[i][0]).to(device)
                     self.dynamic_masks[i] = self.dynamic_masks[i].to(device)
                     self.dynamic_masks[i] = self.dynamic_masks[i] | self.sam2_dynamic_masks[i]
-        
+
+                # DAVIDE: save the final refined masks
+                save_folder = 'ref_dynamic_masks'
+                os.makedirs(save_folder, exist_ok=True)
+                for i in range(self.n_imgs):
+                    dynamic_mask_np = self.dynamic_masks[i].cpu().numpy()
+                    count = np.count_nonzero(dynamic_mask_np)
+                    save_path = os.path.join(save_folder, f'dynamic_mask_{i}.png')
+
+                    # Create an image with colored dynamic pixels and black static pixels
+                    img1_np = self.imgs[i].astype(np.uint8)
+                    colored_dynamic_pixels = np.zeros_like(img1_np)
+                    colored_dynamic_pixels[dynamic_mask_np > 0.99] = [255, 255, 255]
+
+
+                    # Save the image
+                    dynamic_pixels_img = Image.fromarray(colored_dynamic_pixels)
+                    dynamic_pixels_img.save(save_path)
+                #################################
+
+
                 # Clean up
                 del predictor
         finally:
@@ -498,6 +558,7 @@ class PointCloudOptimizer(BasePCOptimizer):
         # Get depths and  projection params if not provided
         focals = self.get_focals()
         pp = self.get_principal_points()
+        # print("PP: ", pp)
         im_poses = self.get_im_poses()
         depth = self.get_depthmaps(raw=True)
 

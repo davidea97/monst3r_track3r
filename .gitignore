@@ -154,3 +154,6 @@ waymo_processed.zip
 
 # Dataset 
 dataset
+dynamic_masks
+init_dynamic_masks
+ref_dynamic_masks

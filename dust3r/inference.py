@@ -60,9 +60,11 @@ def loss_of_one_batch(batch, model, criterion, device, symmetrize_batch=False, u
     ignore_keys = set(['depthmap', 'dataset', 'label', 'instance', 'idx', 'true_shape', 'rng'])
     for view in batch:
         for name in view.keys():  # pseudo_focal
+            # print(f'Name: {name}')
             if name in ignore_keys:
                 continue
             view[name] = view[name].to(device, non_blocking=True)
+            # print("Name: ", name)
 
     if symmetrize_batch:
         view1, view2 = make_batch_symmetric(batch)
@@ -81,6 +83,7 @@ def loss_of_one_batch(batch, model, criterion, device, symmetrize_batch=False, u
 
 @torch.no_grad()
 def inference(pairs, model, device, batch_size=8, verbose=True):
+
     if verbose:
         print(f'>> Inference with model on {len(pairs)} image pairs')
     result = []

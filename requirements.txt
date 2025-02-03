@@ -17,4 +17,5 @@ huggingface-hub[torch]>=0.22
 evo
 
 # for sam2, customized version
--e third_party/sam2
+# -e third_party/sam2
+-e Grounded_SAM_2

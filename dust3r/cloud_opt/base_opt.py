@@ -3,6 +3,8 @@
 # --------------------------------------------------------
 from copy import deepcopy
 import cv2
+import matplotlib
+matplotlib.use('Agg')
 
 import numpy as np
 import torch
@@ -476,6 +478,7 @@ def global_alignment_loop(net, lr=0.01, niter=300, schedule='cosine', lr_min=1e-
                         depth_map_save_path = os.path.join(depth_map_save_dir, f'depthmaps_{i}_iter_{bar.n}.png')
                         plt.imsave(depth_map_save_path, depth_map.detach().cpu().numpy(), cmap='jet')
                     print(f"Saved depthmaps at iteration {bar.n} to {depth_map_save_dir}")
+                
                 loss, lr = global_alignment_iter(net, bar.n, niter, lr_base, lr_min, optimizer, schedule, 
                                                  temporal_smoothing_weight=temporal_smoothing_weight)
                 bar.set_postfix_str(f'{lr=:g} loss={loss:g}')

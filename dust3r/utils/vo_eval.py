@@ -5,6 +5,8 @@ from pathlib import Path
 
 import evo.main_ape as main_ape
 import evo.main_rpe as main_rpe
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
 from evo.core import sync

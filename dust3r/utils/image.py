@@ -195,14 +195,19 @@ def load_images(folder_or_list, size, square_ok=False, verbose=True, dynamic_mas
                 dynamic_mask_path = os.path.join(dynamic_mask_root, os.path.basename(path))
             else:  # Sintel dataset handling
                 dynamic_mask_path = full_path.replace('final', 'dynamic_label_perfect').replace('clean', 'dynamic_label_perfect')
+                # print(f' - Dynamic mask path: {dynamic_mask_path}')
 
             if os.path.exists(dynamic_mask_path):
                 dynamic_mask = PIL.Image.open(dynamic_mask_path).convert('L')
                 dynamic_mask = crop_img(dynamic_mask, size, square_ok=square_ok)
+                
                 dynamic_mask = ToTensor(dynamic_mask)[None].sum(1) > 0.99  # "1" means dynamic
+
                 if dynamic_mask.sum() < 0.8 * dynamic_mask.numel():  # Consider static if over 80% is dynamic
+                    # print(f' - Dynamic mask found for {path}')
                     single_dict['dynamic_mask'] = dynamic_mask
                 else:
+                    # print(f' - Static mask found for {path}')
                     single_dict['dynamic_mask'] = torch.zeros_like(single_dict['mask'])
             else:
                 single_dict['dynamic_mask'] = torch.zeros_like(single_dict['mask'])
@@ -359,7 +364,6 @@ def load_masks(folder, image_list, size, square_ok=False, verbose=True):
     supported_masks_extensions = tuple(supported_masks_extensions)
 
     mask_paths = folder
-
     # Normalize paths to use forward slashes for compatibility
     mask_paths = [path.replace("\\", "/") for path in mask_paths]
     

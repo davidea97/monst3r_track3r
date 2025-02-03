@@ -3,6 +3,10 @@ import os
 import numpy as np
 import yaml
 
+
+SUPPORTED_IMAGE_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.bmp', '.tiff']
+
+
 def generate_image_list(folder_path):
     """
     Generates a list of image paths organized by subfolders (e.g., camera1, camera2, etc.).
@@ -24,7 +28,9 @@ def generate_image_list(folder_path):
 
     for i, subfolder in enumerate(subfolders):
         # Find all .png files in the subfolder (adjust for other extensions if needed)
-        image_paths = glob.glob(os.path.join(os.path.join(subfolder, "image"), "*.png"))
+        image_paths = []
+        for ext in SUPPORTED_IMAGE_EXTENSIONS:
+            image_paths.extend(glob.glob(os.path.join(os.path.join(subfolder, "image"), f"*{ext}")))
 
         # Normalize paths to use forward slashes for compatibility
         image_paths = [path.replace("\\", "/") for path in image_paths]
