@@ -91,13 +91,14 @@ def init_minimum_spanning_tree(self, save_score_path=None, save_score_only=False
         an initial set of pairwise estimations.
     """
     device = self.device
+    focals = self.get_focals()
     if save_score_only:
         eadge_and_scores = compute_edge_scores(map(i_j_ij, self.edges), self.conf_i, self.conf_j)
         draw_edge_scores_map(eadge_and_scores, save_score_path)
         return
     pts3d, _, im_focals, im_poses = minimum_spanning_tree(self.imshapes, self.edges,
                                                           self.pred_i, self.pred_j, self.conf_i, self.conf_j, self.im_conf, self.min_conf_thr,
-                                                          device, has_im_poses=self.has_im_poses, verbose=self.verbose, save_score_path=save_score_path,
+                                                          device, has_im_poses=self.has_im_poses, verbose=self.verbose, save_score_path=save_score_path, focals=focals,
                                                            **kw)
 
     return init_from_pts3d(self, pts3d, im_focals, im_poses)
@@ -119,7 +120,6 @@ def init_from_pts3d(self, pts3d, im_focals, im_poses):
         for img_pts3d in pts3d:
             img_pts3d[:] = geotrf(trf, img_pts3d)
     else: pass # no known poses
-
     # set all pairwise poses
     for e, (i, j) in enumerate(self.edges):
         i_j = edge_str(i, j)
@@ -145,16 +145,16 @@ def init_from_pts3d(self, pts3d, im_focals, im_poses):
                     self._set_focal(i, im_focals[i])
         if self.shared_focal:
             self._set_focal(0, sum(im_focals) / self.n_imgs)
+            
         if self.n_imgs > 2:
             self._set_init_depthmap()
-
     if self.verbose:
         with torch.no_grad():
             print(' init loss =', float(self()))
 
 
 def minimum_spanning_tree(imshapes, edges, pred_i, pred_j, conf_i, conf_j, im_conf, min_conf_thr,
-                          device, has_im_poses=True, niter_PnP=10, verbose=True, save_score_path=None):
+                          device, has_im_poses=True, niter_PnP=10, verbose=True, save_score_path=None, focals=None):
     n_imgs = len(imshapes)
     eadge_and_scores = compute_edge_scores(map(i_j_ij, edges), conf_i, conf_j)
     sparse_graph = -dict_to_sparse_graph(eadge_and_scores)
@@ -165,8 +165,11 @@ def minimum_spanning_tree(imshapes, edges, pred_i, pred_j, conf_i, conf_j, im_co
 
     todo = sorted(zip(-msp.data, msp.row, msp.col))  # sorted edges
     im_poses = [None] * n_imgs
-    im_focals = [None] * n_imgs
-
+    if focals is None:
+        im_focals = [None] * n_imgs
+    else:
+        im_focals = focals.cpu().squeeze().tolist()
+    print("IMFOCALS PREE: ", im_focals)
     # init with strongest edge
     score, i, j = todo.pop()
     if verbose:
@@ -189,7 +192,7 @@ def minimum_spanning_tree(imshapes, edges, pred_i, pred_j, conf_i, conf_j, im_co
     while todo:
         # each time, predict the next one
         score, i, j = todo.pop()
-
+        
         if im_focals[i] is None:
             im_focals[i] = estimate_focal(pred_i[i_j])
 
@@ -230,7 +233,7 @@ def minimum_spanning_tree(imshapes, edges, pred_i, pred_j, conf_i, conf_j, im_co
         else:
             # let's try again later
             todo.insert(0, (score, i, j))
-
+    
     if has_im_poses:
         # complete all missing informations
         pair_scores = list(sparse_graph.values())  # already negative scores: less is best
@@ -251,6 +254,7 @@ def minimum_spanning_tree(imshapes, edges, pred_i, pred_j, conf_i, conf_j, im_co
     else:
         im_poses = im_focals = None
 
+    print("IMFOCALS: ", im_focals)
     return pts3d, msp_edges, im_focals, im_poses
 
 

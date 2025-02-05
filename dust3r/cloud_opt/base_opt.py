@@ -296,7 +296,6 @@ class BasePCOptimizer (nn.Module):
         K = self.get_intrinsics()
         depthmaps = self.get_depthmaps()
         all_pts3d = self.get_pts3d()
-
         new_im_confs = clean_pointcloud(self.im_conf, K, cams, depthmaps, all_pts3d, **kw)
 
         for i, new_conf in enumerate(new_im_confs):
@@ -454,6 +453,12 @@ class BasePCOptimizer (nn.Module):
 
 def global_alignment_loop(net, lr=0.01, niter=300, schedule='cosine', lr_min=1e-3, temporal_smoothing_weight=0, depth_map_save_dir=None):
     params = [p for p in net.parameters() if p.requires_grad]
+
+    # add the calibration parameters if they are not None
+    quat_X, trans_X, scale_factor = net._get_calibration_params()
+    if scale_factor is not None:
+        params += [scale_factor, quat_X, trans_X]
+
     if not params:
         return net
 
@@ -511,7 +516,8 @@ def global_alignment_iter(net, cur_iter, niter, lr_base, lr_min, optimizer, sche
     if net.empty_cache:
         torch.cuda.empty_cache()
     
-    loss = net(epoch=cur_iter)
+    # Minimization of the forward pass
+    loss = net(epoch=cur_iter, niter=niter)
     
     if net.empty_cache:
         torch.cuda.empty_cache()

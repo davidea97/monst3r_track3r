@@ -24,7 +24,7 @@ from dust3r.utils.general_utils import generate_image_list, generate_mask_list, 
 from dust3r.utils.file_utils import *
 from dust3r.cloud_opt import global_aligner, GlobalAlignerMode
 from dust3r.utils.viz_demo import convert_scene_output_to_glb, get_dynamic_mask_from_pairviewer
-
+import shutil
 import matplotlib.pyplot as pl
 
 import cv2
@@ -70,7 +70,7 @@ def get_args_parser():
     return parser
 
 def get_3D_model_from_scene(outdir, silent, scene, min_conf_thr=3, as_pointcloud=False, mask_sky=False,
-                            clean_depth=False, transparent_cams=False, cam_size=0.05, show_cam=True, save_name=None, thr_for_init_conf=True):
+                            clean_depth=False, transparent_cams=False, cam_size=0.05, show_cam=True, save_name=None, thr_for_init_conf=True, parameters_X=None):
     """
     extract 3D_model (glb file) from a reconstructed scene
     """
@@ -88,6 +88,7 @@ def get_3D_model_from_scene(outdir, silent, scene, min_conf_thr=3, as_pointcloud
     cams2world = scene.get_im_poses().cpu()
     # 3D pointcloud from depthmap, poses and intrinsics
     pts3d = to_numpy(scene.get_pts3d(raw_pts=True))
+    scaled_pts3d = [p * parameters_X[0].item() for p in pts3d]
     scene.min_conf_thr = min_conf_thr
     scene.thr_for_init_conf = thr_for_init_conf
     msk = to_numpy(scene.get_masks())
@@ -107,6 +108,7 @@ def get_reconstructed_scene(args, outdir, model, device, silent, image_size, fil
     from a list of images, run dust3r inference, global aligner.
     then run get_3D_model_from_scene
     """
+
     translation_weight = float(translation_weight)
     if new_model_weights != args.weights:
         model = AsymmetricCroCo3DStereo.from_pretrained(new_model_weights).to(device)
@@ -132,7 +134,6 @@ def get_reconstructed_scene(args, outdir, model, device, silent, image_size, fil
 
     if args.use_robot_motion:
         robot_poses = robot_poses
-        print("Robot poses: ", robot_poses)
 
     if len(imgs) == 1:
         imgs = [imgs[0], copy.deepcopy(imgs[0])]
@@ -147,7 +148,7 @@ def get_reconstructed_scene(args, outdir, model, device, silent, image_size, fil
 
     if len(imgs) > 2:
         mode = GlobalAlignerMode.PointCloudOptimizer  
-        scene = global_aligner(output, device=device, mode=mode, verbose=not silent, shared_focal = shared_focal, intrinsic_params=intrinsic_params, dist_coeffs=dist_coeffs, temporal_smoothing_weight=temporal_smoothing_weight, translation_weight=translation_weight,
+        scene = global_aligner(output, device=device, mode=mode, verbose=not silent, shared_focal = shared_focal, intrinsic_params=intrinsic_params, dist_coeffs=dist_coeffs, robot_poses=robot_poses, temporal_smoothing_weight=temporal_smoothing_weight, translation_weight=translation_weight,
                                flow_loss_weight=flow_loss_weight, flow_loss_start_epoch=flow_loss_start_iter, flow_loss_thre=flow_loss_threshold, use_self_mask=not use_gt_mask,
                                num_total_iter=niter, empty_cache= len(filelist) > 72, batchify=not args.not_batchify)
     else:
@@ -156,17 +157,28 @@ def get_reconstructed_scene(args, outdir, model, device, silent, image_size, fil
     lr = 0.01
 
     if mode == GlobalAlignerMode.PointCloudOptimizer:
-        print("Scene type: ", type(scene))
         loss = scene.compute_global_alignment(init='mst', niter=niter, schedule=schedule, lr=lr)
 
     print('Global alignment done!')
 
+    # PARAMETERS
+    scale_factor = scene._get_scale_factor()
+    translation_X = scene._get_trans_X()
+    rotation_X = scene._get_quat_X()
+
+    print("----- PARAMETERS -----")
+    print(f"Scale factor: {scale_factor}")
+    print(f"Scaled translation: {scale_factor * translation_X}")
+    print(f"Rotation: {rotation_X}")
+    parameters_X = [scale_factor, scale_factor * translation_X, rotation_X]
+
     save_folder = f'{args.output_dir}/{seq_name}'  #default is 'demo_tmp/NULL'
-    # if os.path.exists(save_folder):
-    #     shutil.rmtree(save_folder)
+    if os.path.exists(save_folder):
+        shutil.rmtree(save_folder)
     os.makedirs(save_folder, exist_ok=True)
+
     outfile = get_3D_model_from_scene(save_folder, silent, scene, min_conf_thr, as_pointcloud, mask_sky,
-                            clean_depth, transparent_cams, cam_size, show_cam)
+                            clean_depth, transparent_cams, cam_size, show_cam, parameters_X=parameters_X)
 
     poses = scene.save_tum_poses(f'{save_folder}/pred_traj.txt')
     K = scene.save_intrinsics(f'{save_folder}/pred_intrinsics.txt')
@@ -201,7 +213,7 @@ def get_reconstructed_scene(args, outdir, model, device, silent, image_size, fil
 
     # if two images, and the shape is same, we can compute the dynamic mask
     if len(rgbimg) == 2 and rgbimg[0].shape == rgbimg[1].shape:
-        motion_mask_thre = 0.35
+        motion_mask_thre = 7.35 # Default 0.35
         error_map = get_dynamic_mask_from_pairviewer(scene, both_directions=True, output_dir=args.output_dir, motion_mask_thre=motion_mask_thre)
         # imgs.append(rgb(error_map))
         # apply threshold on the error map
@@ -290,65 +302,44 @@ def get_reconstructed_scene_realtime(args, model, device, silent, image_size, fi
     return save_folder
 
 
-def main_demo(tmpdirname, model, device, image_size, server_name, server_port, silent=False, args=None, input_files=None):
+def main_demo(tmpdirname, model, device, image_size, server_name, server_port, silent=False, args=None, input_files=None, intrinsic_params=None, dist_coeffs=None, mask_list=None, robot_poses=None):
     recon_fun = functools.partial(get_reconstructed_scene, args, tmpdirname, model, device, silent, image_size)
     model_from_scene_fun = functools.partial(get_3D_model_from_scene, tmpdirname, silent)
+    
+    # Convert input_files to a format suitable for display
+    input_file_paths = [file for file in input_files]
+    formatted_list = "\n".join(input_file_paths)
+    print("Formatted list: ", formatted_list)
     with gradio.Blocks(css=""".gradio-container {margin: 0 !important; min-width: 100%};""", title="MonST3R Demo") as demo:
         # scene state is save so that you can change conf_thr, cam_size... without rerunning the inference
         scene = gradio.State(None)
-        gradio.HTML(f'<h2 style="text-align: center;">MonST3R Demo</h2>')
+        gradio.HTML(f'<h2 style="text-align: center;">MonST3R Track3r Demo</h2>')
         with gradio.Column():
-            list_selector = gradio.Dropdown(
-                    choices=[f"List {i+1}" for i in range(len(image_list))],
-                    value="Select the image list to process",
-                    label="Select Image List",
-                )
-                
-            def update_image_list(selected_list):
-                # Extract the list index from the selection
-                index = int(selected_list.split()[1]) - 1
+            # Display the provided input files
+            # selected_image_paths = gradio.Textbox(
+            #     label="Selected Image Paths",
+            #     value=formatted_list,
+            #     lines=5,  # Adjust to show more lines
+            #     interactive=False
+            # )
 
-                single_image_list = image_list[index]
-                intrinsic_params = intrinsic_params_vec[index] if intrinsic_params_vec else None
-                dist_coeff = dist_coeffs[index] if dist_coeffs else None
-                robot_pose = robot_poses[index] if robot_poses else None
-                masks = mask_list[index] if mask_list else None
-
-
-                # Format the list as a newline-separated string
-                formatted_list = "\n".join(single_image_list)
-                return formatted_list, single_image_list, intrinsic_params, dist_coeff, robot_pose, masks
-            
-            # Dynamically display the selected image paths
-            selected_image_paths = gradio.Textbox(
-                label="Selected Image Paths",
-                lines=5,  # Adjust to show more lines
-                interactive=False
-            )
-
-            # Placeholder for dynamically updated file input
+            # Placeholder for dynamically updated file input (disabled)
             inputfiles = gradio.File(
                 file_count="multiple",
-                label="Files to Process"
+                label="Files to Process",
+                interactive=False,
+                value=input_file_paths
             )
 
-            intrinsic_state = gradio.State(None)
-            dist_coeff_state = gradio.State(None)
-            robot_pose_state = gradio.State(None)
-            masks_state = gradio.State(None)
-
-
-            # Update handlers for list selection
-            list_selector.change(
-                fn=update_image_list,
-                inputs=list_selector,
-                outputs=[selected_image_paths, inputfiles, intrinsic_state, dist_coeff_state, robot_pose_state, masks_state]
-            )
+            intrinsic_state = gradio.State(intrinsic_params)
+            dist_coeff_state = gradio.State(dist_coeffs)
+            robot_pose_state = gradio.State(robot_poses)
+            masks_state = gradio.State(mask_list)
        
             with gradio.Row():
                 schedule = gradio.Dropdown(["linear", "cosine"],
                                            value='linear', label="schedule", info="For global alignment!")
-                niter = gradio.Number(value=300, precision=0, minimum=0, maximum=5000,
+                niter = gradio.Number(value=500, precision=0, minimum=0, maximum=5000,
                                       label="num_iterations", info="For global alignment!")
                 seq_name = gradio.Textbox(label="Sequence Name", placeholder="NULL", value=args.seq_name, info="For evaluation")
                 scenegraph_type = gradio.Dropdown(["complete", "swin", "oneref", "swinstride", "swin2stride"],
@@ -401,7 +392,8 @@ def main_demo(tmpdirname, model, device, image_size, server_name, server_port, s
                               inputs=[inputfiles, winsize, refid, scenegraph_type],
                               outputs=[winsize, refid])
             run_btn.click(fn=recon_fun,
-                          inputs=[inputfiles, schedule, niter, min_conf_thr, as_pointcloud,
+                          inputs=[inputfiles, intrinsic_state, dist_coeff_state, masks_state, robot_pose_state,
+                                  schedule, niter, min_conf_thr, as_pointcloud,
                                   mask_sky, clean_depth, transparent_cams, cam_size, show_cam,
                                   scenegraph_type, winsize, refid, seq_name, new_model_weights, 
                                   temporal_smoothing_weight, translation_weight, shared_focal, 
@@ -488,7 +480,7 @@ if __name__ == '__main__':
 
                 # Scale translation of the matrix
                 scale = 1.0
-                scale = 0.84
+                # scale = 0.84
                 matrix[:3, 3] = matrix[:3, 3] * scale
 
                 fs.release()
@@ -531,6 +523,7 @@ if __name__ == '__main__':
     image_sublist = image_sublist[camera_selected]
     intrinsic_params = intrinsic_params_vec[camera_selected]
     dist_coeff = dist_coeffs[camera_selected]
+
     if args.mask:
         mask_list = mask_list[camera_selected]
     if args.use_robot_motion:
@@ -539,61 +532,65 @@ if __name__ == '__main__':
         robot_pose = None
 
 
-
     num_frames = len(image_sublist)
     input_files = image_sublist
-    if input_dir is not None:
-        # Process images in the input directory with default parameters
-        image_input_dir = os.path.join(input_dir, 'image')
-        print("Image input dir: ", image_input_dir)
-        if os.path.isdir(image_input_dir):    # input_dir is a directory of images
-            print("Input files: ", input_files)
+
+    main_demo(tmpdirname, model, args.device, args.image_size, server_name, args.server_port, silent=args.silent, args=args, 
+                  input_files=input_files, intrinsic_params=intrinsic_params, dist_coeffs=dist_coeff, mask_list=mask_list, robot_poses=robot_pose)
+
+    # if input_dir is None:
+    #     # Process images in the input directory with default parameters
+    #     image_input_dir = os.path.join(input_dir, 'image')
+    #     print("Image input dir: ", image_input_dir)
+    #     if os.path.isdir(image_input_dir):    # input_dir is a directory of images
+    #         print("Input files: ", input_files)
 
 
-        if args.real_time:
-            recon_fun = functools.partial(get_reconstructed_scene_realtime, args, model, args.device, args.silent, args.image_size)
-            outfile = recon_fun(
-                filelist=input_files,
-                scenegraph_type='oneref_mid',
-                refid=0,
-                seq_name=args.seq_name,
-                fps=args.fps,
-                num_frames=num_frames,
-            )
-        else:
-            recon_fun = functools.partial(get_reconstructed_scene, args, tmpdirname, model, args.device, args.silent, args.image_size)
-            # Call the function with default parameters
-            scene, outfile, imgs = recon_fun(
-                filelist=input_files,
-                intrinsic_params=intrinsic_params,
-                dist_coeffs=dist_coeff,
-                mask_list=mask_list,
-                robot_poses=robot_pose,
-                schedule='linear',
-                niter=300,
-                min_conf_thr=1.1,
-                as_pointcloud=True,
-                mask_sky=False,
-                clean_depth=True,
-                transparent_cams=False,
-                cam_size=0.05,
-                show_cam=True,
-                scenegraph_type='swinstride',
-                winsize=5,
-                refid=0,
-                seq_name=args.seq_name,
-                new_model_weights=args.weights,
-                temporal_smoothing_weight=0.01,
-                translation_weight='1.0',
-                shared_focal=True,
-                flow_loss_weight=0.01,
-                flow_loss_start_iter=0.1,
-                flow_loss_threshold=25,
-                use_gt_mask=args.use_gt_davis_masks,
-                fps=args.fps,
-                num_frames=num_frames,
-            )
-        print(f"Processing completed. Output saved in {tmpdirname}/{args.seq_name}")
-    else:
-        # Launch Gradio demo
-        main_demo(tmpdirname, model, args.device, args.image_size, server_name, args.server_port, silent=args.silent, args=args, input_files=input_files)
+    #     if args.real_time:
+    #         recon_fun = functools.partial(get_reconstructed_scene_realtime, args, model, args.device, args.silent, args.image_size)
+    #         outfile = recon_fun(
+    #             filelist=input_files,
+    #             scenegraph_type='oneref_mid',
+    #             refid=0,
+    #             seq_name=args.seq_name,
+    #             fps=args.fps,
+    #             num_frames=num_frames,
+    #         )
+    #     else:
+    #         recon_fun = functools.partial(get_reconstructed_scene, args, tmpdirname, model, args.device, args.silent, args.image_size)
+    #         # Call the function with default parameters
+    #         scene, outfile, imgs = recon_fun(
+    #             filelist=input_files,
+    #             intrinsic_params=intrinsic_params,
+    #             dist_coeffs=dist_coeff,
+    #             mask_list=mask_list,
+    #             robot_poses=robot_pose,
+    #             schedule='linear',
+    #             niter=300,
+    #             min_conf_thr=1.1,
+    #             as_pointcloud=True,
+    #             mask_sky=False,
+    #             clean_depth=True,
+    #             transparent_cams=False,
+    #             cam_size=0.05,
+    #             show_cam=True,
+    #             scenegraph_type='swinstride',
+    #             winsize=5,
+    #             refid=0,
+    #             seq_name=args.seq_name,
+    #             new_model_weights=args.weights,
+    #             temporal_smoothing_weight=0.01,
+    #             translation_weight='1.0',
+    #             shared_focal=True,
+    #             flow_loss_weight=0.01,
+    #             flow_loss_start_iter=0.1,
+    #             flow_loss_threshold=25,
+    #             use_gt_mask=args.use_gt_davis_masks,
+    #             fps=args.fps,
+    #             num_frames=num_frames,
+    #         )
+    #     print(f"Processing completed. Output saved in {tmpdirname}/{args.seq_name}")
+    # else:
+    #     # Launch Gradio demo
+    #     main_demo(tmpdirname, model, args.device, args.image_size, server_name, args.server_port, silent=args.silent, args=args, 
+    #               input_files=input_files, intrinsic_params=intrinsic_params, dist_coeffs=dist_coeffs, mask_list=mask_list, robot_poses=robot_poses)

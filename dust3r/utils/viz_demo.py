@@ -18,7 +18,6 @@ def convert_scene_output_to_glb(outdir, imgs, pts3d, mask, focals, cams2world, c
     imgs = to_numpy(imgs)
     focals = to_numpy(focals)
     cams2world = to_numpy(cams2world)
-
     scene = trimesh.Scene()
 
     # full pointcloud
@@ -44,6 +43,16 @@ def convert_scene_output_to_glb(outdir, imgs, pts3d, mask, focals, cams2world, c
             add_scene_cam(scene, pose_c2w, camera_edge_color,
                         None if transparent_cams else imgs[i], focals[i],
                         imsize=imgs[i].shape[1::-1], screen_width=cam_size)
+            
+            # Add camera reference frame
+            if i == 0:
+                cam_axis = trimesh.creation.axis(origin_size=0.01, axis_length=0.1)
+                cam_axis.apply_transform(pose_c2w)
+                scene.add_geometry(cam_axis)
+
+    # Add world reference frame
+    world_axis = trimesh.creation.axis(origin_size=0.04, axis_length=0.2)
+    scene.add_geometry(world_axis)
 
     rot = np.eye(4)
     rot[:3, :3] = Rotation.from_euler('y', np.deg2rad(180)).as_matrix()
