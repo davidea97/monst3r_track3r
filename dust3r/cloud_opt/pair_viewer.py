@@ -18,7 +18,7 @@ class PairViewer (BasePCOptimizer):
     To use only when the goal is to visualize the results for a pair of images (with is_symmetrized)
     """
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, intrinsics=None, **kwargs):
         super().__init__(*args, **kwargs)
         assert self.is_symmetrized and self.n_edges == 2
         self.has_im_poses = True
@@ -36,8 +36,15 @@ class PairViewer (BasePCOptimizer):
 
             H, W = self.imshapes[i]
             pts3d = self.pred_i[edge_str(i, 1-i)]
-            pp = torch.tensor((W/2, H/2))
-            focal = float(estimate_focal_knowing_depth(pts3d[None], pp, focal_mode='weiszfeld'))
+            
+            # Add predefined focal and principal point
+            if intrinsics is not None:
+                pp = torch.tensor((intrinsics['pp'][0],intrinsics['pp'][1]))
+                focal = float(intrinsics['focal'])
+            else:
+                pp = torch.tensor((W/2, H/2))
+                focal = float(estimate_focal_knowing_depth(pts3d[None], pp, focal_mode='weiszfeld'))
+            
             self.focals.append(focal)
             self.pp.append(pp)
 

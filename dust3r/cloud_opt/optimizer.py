@@ -36,9 +36,10 @@ class PointCloudOptimizer(BasePCOptimizer):
     Graph edges: observations = (pred1, pred2)
     """
 
+    # DAVIDE changed motion_mask_thre, it's default value is 0.35
     def __init__(self, *args, optimize_pp=False, focal_break=20, shared_focal=False, intrinsic_params=None, dist_coeffs=None, robot_poses=None, flow_loss_fn='smooth_l1', flow_loss_weight=0.0, 
                  depth_regularize_weight=0.0, num_total_iter=300, temporal_smoothing_weight=0, translation_weight=0.1, flow_loss_start_epoch=0.15, flow_loss_thre=50,
-                 sintel_ckpt=False, use_self_mask=False, pxl_thre=50, sam2_mask_refine=True, motion_mask_thre=0.35, batchify=True, **kwargs):
+                 sintel_ckpt=False, use_self_mask=False, pxl_thre=50, sam2_mask_refine=True, motion_mask_thre=10, batchify=True, **kwargs):
         super().__init__(*args, **kwargs)
 
         self.has_im_poses = True  # by definition of this class
@@ -59,6 +60,7 @@ class PointCloudOptimizer(BasePCOptimizer):
         self.im_depthmaps = nn.ParameterList(torch.randn(H, W)/10-3 for H, W in self.imshapes)  # log(depth)
         self.im_poses = nn.ParameterList(self.rand_pose(self.POSE_DIM) for _ in range(self.n_imgs))  # camera poses
         self.shared_focal = shared_focal
+        self.intrinsic_params = intrinsic_params
         if self.shared_focal:
             if intrinsic_params is None:
                 self.im_focals = nn.ParameterList(
@@ -153,7 +155,7 @@ class PointCloudOptimizer(BasePCOptimizer):
     def get_flow(self, sintel_ckpt=False): #TODO: test with gt flow
         print('precomputing flow...')
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        get_valid_flow_mask = OccMask(th=3.0)
+        get_valid_flow_mask = OccMask(th=3.0) # Default 3
         pair_imgs = [np.stack(self.imgs)[self._ei], np.stack(self.imgs)[self._ej]]
 
         flow_net = load_RAFT() if sintel_ckpt else load_RAFT("third_party/RAFT/models/Tartan-C-T-TSKH-spring540x960-M.pth")
@@ -220,7 +222,8 @@ class PointCloudOptimizer(BasePCOptimizer):
                     new_pred2[key] = [pred2[key][i], pred2[key][j]]
                 elif isinstance(pred2[key], torch.Tensor):
                     new_pred2[key] = torch.stack([pred2[key][i], pred2[key][j]])
-            pair_viewer = PairViewer(new_view1, new_view2, new_pred1, new_pred2, verbose=False)
+
+            pair_viewer = PairViewer(new_view1, new_view2, new_pred1, new_pred2, verbose=False, intrinsics=self.intrinsic_params)
             intrinsics_i.append(pair_viewer.get_intrinsics()[0])
             intrinsics_j.append(pair_viewer.get_intrinsics()[1])
             R_i.append(pair_viewer.get_im_poses()[0][:3, :3])
@@ -641,6 +644,17 @@ class PointCloudOptimizer(BasePCOptimizer):
         else:
             return self.depth_to_pts3d_partial()
 
+    def get_relative_poses(self, cam2w, scale_factor=None):
+        # Inverse of the first camera pose
+        cam2w_0_inv = torch.inverse(cam2w[0])
+        
+        # Compute relative poses
+        ccam2pcam = [cam2w_0_inv @ cam2w_pose for cam2w_pose in cam2w]
+        if scale_factor is not None:
+            for i in range(len(ccam2pcam)):
+                ccam2pcam[i][:3, 3] *= scale_factor
+        return ccam2pcam
+    
     def calibration_loss(self, cam2w, robot_poses, scale_factor, quat_X, trans_X):
         """
         Loss function exploiting robot kinematics with quaternion rotation representation.
@@ -660,6 +674,7 @@ class PointCloudOptimizer(BasePCOptimizer):
         trans_X = trans_X.to(device).to(dtype)
         scale_factor = scale_factor.to(device).to(dtype)
         scale_factor = torch.abs(scale_factor)
+        print(f"Scale factor: {scale_factor}")
         quat_X = quat_X.to(device).to(dtype)
         X_rot = X_rot.to(device).to(dtype)
 
@@ -708,11 +723,11 @@ class PointCloudOptimizer(BasePCOptimizer):
             chain1_quat = matrix_to_quaternion(chain1[:3, :3])
             chain2_quat = matrix_to_quaternion(chain2[:3, :3])
             rotation_magnitude = rotation_magnitude_list[i - 1]
-            rotation_loss = rotation_magnitude * torch.nn.functional.mse_loss(chain1_quat, chain2_quat)
+            rotation_loss = torch.nn.functional.mse_loss(chain1_quat, chain2_quat)
 
             # Compute translation loss
-            translation_loss = rotation_magnitude * torch.nn.functional.mse_loss(chain1[:3, 3], chain2[:3, 3])
-            # print(f"Rotation loss {rotation_loss} - Translation loss {translation_loss}")
+            translation_loss = torch.nn.functional.mse_loss(chain1[:3, 3], chain2[:3, 3])
+            # print(f"Rotation loss {torch.nn.functional.mse_loss(chain1_quat, chain2_quat)} - Translation loss {torch.nn.functional.mse_loss(chain1[:3, 3], chain2[:3, 3])}")
             # Combine losses
             loss += rotation_loss + translation_loss
         
@@ -723,6 +738,7 @@ class PointCloudOptimizer(BasePCOptimizer):
         pw_poses = self.get_pw_poses()  # cam-to-world
 
         pw_adapt = self.get_adaptors().unsqueeze(1)
+        scale_factor = torch.abs(self._get_scale_factor())
         proj_pts3d = self.get_pts3d(raw=True)
 
         # rotate pairwise prediction according to pw_poses
@@ -759,7 +775,7 @@ class PointCloudOptimizer(BasePCOptimizer):
             flow_loss_i = self.flow_loss_fn(ego_flow_1_2[:, :2, ...], self.flow_ij, ~dynamic_mask1, per_pixel_thre=self.pxl_thre)
             flow_loss_j = self.flow_loss_fn(ego_flow_2_1[:, :2, ...], self.flow_ji, ~dynamic_mask2, per_pixel_thre=self.pxl_thre)
             flow_loss = flow_loss_i + flow_loss_j
-            print(f'flow loss: {flow_loss.item()}')
+            # print(f'flow loss: {flow_loss.item()}')
             if flow_loss.item() > self.flow_loss_thre and self.flow_loss_thre > 0: 
                 flow_loss = 0
                 self.flow_loss_flag = True
@@ -777,12 +793,12 @@ class PointCloudOptimizer(BasePCOptimizer):
         # DAVIDE CALIBRATION LOSS
         # Calibration loss
         robot_poses = self._get_robot_poses()
-        scale_factor = self._get_scale_factor()
+        
         quat_X = self._get_quat_X()
         trans_X = self._get_trans_X()
         cam2w = self.get_im_poses()
         if robot_poses is None or scale_factor is None or quat_X is None or trans_X is None:
-            raise ValueError("Uno o più parametri di calibrazione sono None")
+            print("Uno o più parametri di calibrazione sono None")
 
         if quat_X is not None:
             calibration_loss_value = self.calibration_loss(cam2w, robot_poses, scale_factor, quat_X, trans_X)
@@ -796,16 +812,21 @@ class PointCloudOptimizer(BasePCOptimizer):
 
         if calibration_loss_value is None:
             raise ValueError("calibration_loss_value è None")
+        
+        # Manually set to 0
         self.temporal_smoothing_weight = 0
         self.flow_loss_weight = 0
-        loss = (li + lj) * 0.01 + self.temporal_smoothing_weight * temporal_smoothing_loss + \
+
+        loss = (li + lj) * 1 + self.temporal_smoothing_weight * temporal_smoothing_loss + \
                 self.flow_loss_weight * flow_loss + self.depth_regularize_weight * depth_prior_loss + weight_calib* calibration_loss_value
         # print(f"Weight calibration: {weight_calib}")
         # print(f'loss: {loss.item()}')
+        quat_X.data = quat_X.data / quat_X.data.norm()
         print(f"Calibration loss: {calibration_loss_value}")
-        print(f"Quat_X: {quat_X}")
-        print(f"Trans X: {trans_X}")
-        print(f"Scale factor: {scale_factor}")
+        # print(f"Quat_X: {quat_X}")
+        # print(f"Trans X: {trans_X}")
+        # print(f"Scale factor: {scale_factor}")
+        # print(f"Weights: {weight_calib}")
         return loss
     
     def forward_non_batchify(self, epoch=9999):

@@ -51,12 +51,13 @@ def convert_scene_output_to_glb(outdir, imgs, pts3d, mask, focals, cams2world, c
                 scene.add_geometry(cam_axis)
 
     # Add world reference frame
-    world_axis = trimesh.creation.axis(origin_size=0.04, axis_length=0.2)
+    world_axis = trimesh.creation.axis(origin_size=0.01, axis_length=0.1)
     scene.add_geometry(world_axis)
 
     rot = np.eye(4)
     rot[:3, :3] = Rotation.from_euler('y', np.deg2rad(180)).as_matrix()
     scene.apply_transform(np.linalg.inv(cams2world[0] @ OPENGL @ rot))
+    
     if save_name is None: save_name='scene'
     outfile = os.path.join(outdir, save_name+'.glb')
     if not silent:

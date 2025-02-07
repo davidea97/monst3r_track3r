@@ -86,9 +86,14 @@ def get_3D_model_from_scene(outdir, silent, scene, min_conf_thr=3, as_pointcloud
     rgbimg = scene.imgs
     focals = scene.get_focals().cpu()
     cams2world = scene.get_im_poses().cpu()
+
+    if parameters_X[0] is not None:
+        cams2world = scene.get_relative_poses(cams2world, scale_factor=parameters_X[0].item())
     # 3D pointcloud from depthmap, poses and intrinsics
     pts3d = to_numpy(scene.get_pts3d(raw_pts=True))
-    scaled_pts3d = [p * parameters_X[0].item() for p in pts3d]
+    if parameters_X[0] is not None:
+        scaled_pts3d = [p * parameters_X[0].item() for p in pts3d]
+        pts3d = scaled_pts3d
     scene.min_conf_thr = min_conf_thr
     scene.thr_for_init_conf = thr_for_init_conf
     msk = to_numpy(scene.get_masks())
@@ -154,7 +159,8 @@ def get_reconstructed_scene(args, outdir, model, device, silent, image_size, fil
     else:
         mode = GlobalAlignerMode.PairViewer
         scene = global_aligner(output, device=device, mode=mode, verbose=not silent)
-    lr = 0.01
+    
+    lr = 0.2
 
     if mode == GlobalAlignerMode.PointCloudOptimizer:
         loss = scene.compute_global_alignment(init='mst', niter=niter, schedule=schedule, lr=lr)
@@ -162,15 +168,16 @@ def get_reconstructed_scene(args, outdir, model, device, silent, image_size, fil
     print('Global alignment done!')
 
     # PARAMETERS
-    scale_factor = scene._get_scale_factor()
+    scale_factor = torch.abs(scene._get_scale_factor())
     translation_X = scene._get_trans_X()
     rotation_X = scene._get_quat_X()
-
+    parameters_X = [scale_factor, translation_X, rotation_X]
     print("----- PARAMETERS -----")
-    print(f"Scale factor: {scale_factor}")
-    print(f"Scaled translation: {scale_factor * translation_X}")
-    print(f"Rotation: {rotation_X}")
-    parameters_X = [scale_factor, scale_factor * translation_X, rotation_X]
+    if scale_factor is not None:
+        print(f"Scale factor: {scale_factor}")
+        print(f"Scaled translation: {scale_factor * translation_X}")
+        print(f"Rotation: {rotation_X}")
+        parameters_X = [scale_factor, scale_factor * translation_X, rotation_X]
 
     save_folder = f'{args.output_dir}/{seq_name}'  #default is 'demo_tmp/NULL'
     if os.path.exists(save_folder):
@@ -213,7 +220,7 @@ def get_reconstructed_scene(args, outdir, model, device, silent, image_size, fil
 
     # if two images, and the shape is same, we can compute the dynamic mask
     if len(rgbimg) == 2 and rgbimg[0].shape == rgbimg[1].shape:
-        motion_mask_thre = 7.35 # Default 0.35
+        motion_mask_thre = 0.35 # Default 0.35
         error_map = get_dynamic_mask_from_pairviewer(scene, both_directions=True, output_dir=args.output_dir, motion_mask_thre=motion_mask_thre)
         # imgs.append(rgb(error_map))
         # apply threshold on the error map
