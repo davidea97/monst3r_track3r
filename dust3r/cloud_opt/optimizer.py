@@ -37,8 +37,8 @@ class PointCloudOptimizer(BasePCOptimizer):
     """
 
     # DAVIDE changed motion_mask_thre, it's default value is 0.35
-    def __init__(self, *args, optimize_pp=False, focal_break=20, shared_focal=False, intrinsic_params=None, dist_coeffs=None, robot_poses=None, flow_loss_fn='smooth_l1', flow_loss_weight=0.0, 
-                 depth_regularize_weight=0.0, num_total_iter=300, temporal_smoothing_weight=0, translation_weight=0.1, flow_loss_start_epoch=0.15, flow_loss_thre=50,
+    def __init__(self, *args, optimize_pp=False, focal_break=20, shared_focal=False, intrinsic_params=None, dist_coeffs=None, robot_poses=None, masks=None, flow_loss_fn='smooth_l1', flow_loss_weight=0.0, 
+                 depth_regularize_weight=0.1, num_total_iter=300, temporal_smoothing_weight=0, translation_weight=0.1, flow_loss_start_epoch=0.15, flow_loss_thre=50,
                  sintel_ckpt=False, use_self_mask=False, pxl_thre=50, sam2_mask_refine=True, motion_mask_thre=10, batchify=True, **kwargs):
         super().__init__(*args, **kwargs)
 
@@ -55,7 +55,8 @@ class PointCloudOptimizer(BasePCOptimizer):
         self.motion_mask_thre = motion_mask_thre
         self.batchify = batchify
         self.robot_poses = robot_poses
-        
+        self.masks = masks
+
         # adding thing to optimize
         self.im_depthmaps = nn.ParameterList(torch.randn(H, W)/10-3 for H, W in self.imshapes)  # log(depth)
         self.im_poses = nn.ParameterList(self.rand_pose(self.POSE_DIM) for _ in range(self.n_imgs))  # camera poses
@@ -261,6 +262,9 @@ class PointCloudOptimizer(BasePCOptimizer):
         for i in range(self.n_imgs):
             self.dynamic_masks[i] = torch.stack(self.dynamic_masks[i]).mean(dim=0) > self.motion_mask_thre
 
+    def get_object_masks(self):
+        return self.masks
+    
     def refine_motion_mask_w_sam2(self):
         """
         Refine the motion mask using SAM2.
@@ -534,7 +538,14 @@ class PointCloudOptimizer(BasePCOptimizer):
     
 
     def get_im_poses_batch(self):  # cam to world
+        
         cam2world = self._get_poses(self.im_poses)
+        R_z = torch.tensor([[-1, 0, 0, 0], 
+                        [0, -1, 0, 0], 
+                        [0, 0, 1, 0],
+                        [0, 0, 0, 1]], device=self.device, dtype=self.im_poses[0].dtype)
+        cam2world_transformed = R_z @ cam2world
+
         return cam2world
 
     def get_im_poses_non_batch(self):  # cam to world
@@ -606,6 +617,17 @@ class PointCloudOptimizer(BasePCOptimizer):
         else:
             return self.get_depthmaps_non_batch()
 
+    def object_pts3d(self, masks_list, rel_ptmaps):
+        masked_pts_list = []
+        for i, mask in enumerate(masks_list):  # Assume `masks_list` contains 10 masks
+            mask_tensor = torch.tensor(mask, dtype=torch.bool, device=rel_ptmaps.device)
+            flattened_mask = mask_tensor.view(-1)
+            masked_pts = rel_ptmaps[i][flattened_mask]
+            masked_pts_list.append(masked_pts)
+            # print(f"Mask {i}: {masked_pts.shape}")  # Shape of extracted 3D points
+        return masked_pts_list
+
+
     def depth_to_pts3d(self):
         # Get depths and  projection params if not provided
         focals = self.get_focals()
@@ -615,8 +637,11 @@ class PointCloudOptimizer(BasePCOptimizer):
 
         # get pointmaps in camera frame
         rel_ptmaps = _fast_depthmap_to_pts3d(depth, self._grid, focals, pp=pp)
+        transformed_ptmaps = geotrf(im_poses, rel_ptmaps)
+        masks = self.get_object_masks()
+        object_pts3d = self.object_pts3d(masks, transformed_ptmaps)
         # project to world frame
-        return geotrf(im_poses, rel_ptmaps)
+        return transformed_ptmaps, object_pts3d
 
     def depth_to_pts3d_partial(self):
         # Get depths and  projection params if not provided
@@ -633,10 +658,10 @@ class PointCloudOptimizer(BasePCOptimizer):
         return [geotrf(pose, ptmap) for pose, ptmap in zip(im_poses, rel_ptmaps)]
     
     def get_pts3d_batch(self, raw=False, **kwargs):
-        res = self.depth_to_pts3d()
+        res, res_object = self.depth_to_pts3d()
         if not raw:
             res = [dm[:h*w].view(h, w, 3) for dm, (h, w) in zip(res, self.imshapes)]
-        return res
+        return res, res_object
 
     def get_pts3d(self, raw=False, **kwargs):
         if self.batchify:
@@ -681,10 +706,7 @@ class PointCloudOptimizer(BasePCOptimizer):
         # Construct transformation matrix X
         X = torch.cat([torch.cat([X_rot, trans_X.view(3, 1)], dim=1), 
                     torch.tensor([[0, 0, 0, 1]], device=device, dtype=dtype)], dim=0)
-        R_z = torch.tensor([[-1, 0, 0, 0], 
-                        [0, -1, 0, 0], 
-                        [0, 0, 1, 0],
-                        [0, 0, 0, 1]], device=device, dtype=dtype)
+        
         # Compute the rotation magnitude
         rotation_magnitude_list = []
         for i in range(1, len(w2cam)):
@@ -723,10 +745,10 @@ class PointCloudOptimizer(BasePCOptimizer):
             chain1_quat = matrix_to_quaternion(chain1[:3, :3])
             chain2_quat = matrix_to_quaternion(chain2[:3, :3])
             rotation_magnitude = rotation_magnitude_list[i - 1]
-            rotation_loss = torch.nn.functional.mse_loss(chain1_quat, chain2_quat)
+            rotation_loss = rotation_magnitude * torch.nn.functional.mse_loss(chain1_quat, chain2_quat)
 
             # Compute translation loss
-            translation_loss = torch.nn.functional.mse_loss(chain1[:3, 3], chain2[:3, 3])
+            translation_loss = rotation_magnitude * torch.nn.functional.mse_loss(chain1[:3, 3], chain2[:3, 3])
             # print(f"Rotation loss {torch.nn.functional.mse_loss(chain1_quat, chain2_quat)} - Translation loss {torch.nn.functional.mse_loss(chain1[:3, 3], chain2[:3, 3])}")
             # Combine losses
             loss += rotation_loss + translation_loss
@@ -738,8 +760,8 @@ class PointCloudOptimizer(BasePCOptimizer):
         pw_poses = self.get_pw_poses()  # cam-to-world
 
         pw_adapt = self.get_adaptors().unsqueeze(1)
-        scale_factor = torch.abs(self._get_scale_factor())
-        proj_pts3d = self.get_pts3d(raw=True)
+        
+        proj_pts3d, _ = self.get_pts3d(raw=True)
 
         # rotate pairwise prediction according to pw_poses
         aligned_pred_i = geotrf(pw_poses, pw_adapt * self._stacked_pred_i)
@@ -770,6 +792,7 @@ class PointCloudOptimizer(BasePCOptimizer):
             ego_flow_1_2, _ = self.depth_wrapper(R1, T1, R2, T2, disp_1, K_2, inv_K_1)
             ego_flow_2_1, _ = self.depth_wrapper(R2, T2, R1, T1, disp_2, K_1, inv_K_2)
             dynamic_masks_all = torch.stack(self.dynamic_masks).to(self.device).unsqueeze(1)
+            true_counts = dynamic_masks_all.sum(dim=(2, 3))  # Sum over height & width dimensions
             dynamic_mask1, dynamic_mask2 = dynamic_masks_all[self._ei], dynamic_masks_all[self._ej]
 
             flow_loss_i = self.flow_loss_fn(ego_flow_1_2[:, :2, ...], self.flow_ij, ~dynamic_mask1, per_pixel_thre=self.pxl_thre)
@@ -797,6 +820,10 @@ class PointCloudOptimizer(BasePCOptimizer):
         quat_X = self._get_quat_X()
         trans_X = self._get_trans_X()
         cam2w = self.get_im_poses()
+        scale_factor = self._get_scale_factor()
+        if scale_factor is not None:
+            scale_factor = torch.abs(scale_factor)
+        
         if robot_poses is None or scale_factor is None or quat_X is None or trans_X is None:
             print("Uno o più parametri di calibrazione sono None")
 
@@ -814,14 +841,15 @@ class PointCloudOptimizer(BasePCOptimizer):
             raise ValueError("calibration_loss_value è None")
         
         # Manually set to 0
-        self.temporal_smoothing_weight = 0
+        self.temporal_smoothing_weight = 0 # It enabes the temporal smoothing loss; i.e., the similarity between adjacent frames
         self.flow_loss_weight = 0
 
         loss = (li + lj) * 1 + self.temporal_smoothing_weight * temporal_smoothing_loss + \
                 self.flow_loss_weight * flow_loss + self.depth_regularize_weight * depth_prior_loss + weight_calib* calibration_loss_value
         # print(f"Weight calibration: {weight_calib}")
         # print(f'loss: {loss.item()}')
-        quat_X.data = quat_X.data / quat_X.data.norm()
+        if quat_X is not None:
+            quat_X.data = quat_X.data / quat_X.data.norm()
         print(f"Calibration loss: {calibration_loss_value}")
         # print(f"Quat_X: {quat_X}")
         # print(f"Trans X: {trans_X}")
@@ -834,7 +862,7 @@ class PointCloudOptimizer(BasePCOptimizer):
         # --(1) Perform the original pairwise 3D consistency loss (pairwise 3D consistency)--
         pw_poses = self.get_pw_poses()  # pair-wise poses (or adaptive poses)
         pw_adapt = self.get_adaptors()
-        proj_pts3d = self.get_pts3d()   # 3D point clouds for each image
+        proj_pts3d, _ = self.get_pts3d()   # 3D point clouds for each image
         weight_i = {i_j: self.conf_trf(c) for i_j, c in self.conf_i.items()}
         weight_j = {i_j: self.conf_trf(c) for i_j, c in self.conf_j.items()}
 
@@ -872,6 +900,7 @@ class PointCloudOptimizer(BasePCOptimizer):
         # --(3) Add flow constraint (flow_loss), similar to forward_batchify--
         flow_loss = 0.0
         if self.flow_loss_weight > 0 and epoch >= self.num_total_iter * self.flow_loss_start_epoch:
+            print(f"Computing flow loss at epoch {epoch}")
             # Iterate through each pair of images and compute the depth map and flow comparison
             im_poses = self.get_im_poses()   # (n_imgs, 4, 4)
             K_all = self.get_intrinsics()    # (n_imgs, 3, 3)

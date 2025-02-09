@@ -70,7 +70,7 @@ def get_args_parser():
     return parser
 
 def get_3D_model_from_scene(outdir, silent, scene, min_conf_thr=3, as_pointcloud=False, mask_sky=False,
-                            clean_depth=False, transparent_cams=False, cam_size=0.05, show_cam=True, save_name=None, thr_for_init_conf=True, parameters_X=None):
+                            clean_depth=False, transparent_cams=False, cam_size=0.05, show_cam=True, save_name=None, thr_for_init_conf=True, parameters_X=None, object_masks=None):
     """
     extract 3D_model (glb file) from a reconstructed scene
     """
@@ -90,19 +90,50 @@ def get_3D_model_from_scene(outdir, silent, scene, min_conf_thr=3, as_pointcloud
     if parameters_X[0] is not None:
         cams2world = scene.get_relative_poses(cams2world, scale_factor=parameters_X[0].item())
     # 3D pointcloud from depthmap, poses and intrinsics
-    pts3d = to_numpy(scene.get_pts3d(raw_pts=True))
+    pts3d, object_pts3d = to_numpy(scene.get_pts3d(raw_pts=True))
     if parameters_X[0] is not None:
         scaled_pts3d = [p * parameters_X[0].item() for p in pts3d]
+        scaled_object_pts3d = [p * parameters_X[0].item() for p in object_pts3d]
         pts3d = scaled_pts3d
+        object_pts3d = scaled_object_pts3d
     scene.min_conf_thr = min_conf_thr
     scene.thr_for_init_conf = thr_for_init_conf
     msk = to_numpy(scene.get_masks())
+
+    # Get the confidence maps
+    if object_masks is not None:
+        unique_masks = np.unique(object_masks[0])
+        all_conf_object = [[None for _ in range(len(object_pts3d))] for _ in range(len(unique_masks)-1)]
+        for i in range(len(object_pts3d)):
+            confs_object = []
+            masks_bool = []
+            unique_masks = np.unique(object_masks[i])
+            for mask_value in unique_masks:
+                if mask_value == 0:
+                    continue
+                mask_tensor = torch.from_numpy(object_masks[i]).to(object_pts3d[i].device)  # Convert mask to PyTorch tensor
+                mask_object = (mask_tensor == mask_value)
+                mask_bool = mask_object.bool()
+                # masks_bool.append(mask_bool)
+                conf_object = msk[i][mask_bool]
+                all_conf_object[mask_value-1][i] = conf_object
+
+        all_msk_obj = []
+        print("Length of confs_object: ", len(confs_object))
+        for conf_object in all_conf_object:
+
+            valid_conf_object = [c for c in conf_object if c is not None]
+
+            # Now apply the comparison to the valid conf_object elements
+            msk_obj = to_numpy([c > min_conf_thr for c in valid_conf_object])
+            all_msk_obj.append(msk_obj)
+
     cmap = pl.get_cmap('viridis')
     cam_color = [cmap(i/len(rgbimg))[:3] for i in range(len(rgbimg))]
     cam_color = [(255*c[0], 255*c[1], 255*c[2]) for c in cam_color]
     return convert_scene_output_to_glb(outdir, rgbimg, pts3d, msk, focals, cams2world, as_pointcloud=as_pointcloud,
                                         transparent_cams=transparent_cams, cam_size=cam_size, show_cam=show_cam, silent=silent, save_name=save_name,
-                                        cam_color=cam_color)
+                                        cam_color=cam_color, object_pts3d=object_pts3d, all_msk_obj=all_msk_obj)
 
 
 def get_reconstructed_scene(args, outdir, model, device, silent, image_size, filelist, intrinsic_params, dist_coeffs, mask_list, robot_poses, schedule, niter, min_conf_thr,
@@ -139,6 +170,11 @@ def get_reconstructed_scene(args, outdir, model, device, silent, image_size, fil
 
     if args.use_robot_motion:
         robot_poses = robot_poses
+    print("MASKS: ", len(msks[0]))
+    msks = msks[0]
+    # Print how many True values are in the mask
+    for i in range(len(msks)):
+        print("Number of True values in mask ", i, ": ", np.sum(msks[i]))
 
     if len(imgs) == 1:
         imgs = [imgs[0], copy.deepcopy(imgs[0])]
@@ -150,10 +186,10 @@ def get_reconstructed_scene(args, outdir, model, device, silent, image_size, fil
 
     pairs = make_pairs(imgs, scene_graph=scenegraph_type, prefilter=None, symmetrize=True)
     output = inference(pairs, model, device, batch_size=args.batch_size, verbose=not silent)
-
+    
     if len(imgs) > 2:
         mode = GlobalAlignerMode.PointCloudOptimizer  
-        scene = global_aligner(output, device=device, mode=mode, verbose=not silent, shared_focal = shared_focal, intrinsic_params=intrinsic_params, dist_coeffs=dist_coeffs, robot_poses=robot_poses, temporal_smoothing_weight=temporal_smoothing_weight, translation_weight=translation_weight,
+        scene = global_aligner(output, device=device, mode=mode, verbose=not silent, shared_focal = shared_focal, intrinsic_params=intrinsic_params, dist_coeffs=dist_coeffs, robot_poses=robot_poses, masks=msks, temporal_smoothing_weight=temporal_smoothing_weight, translation_weight=translation_weight,
                                flow_loss_weight=flow_loss_weight, flow_loss_start_epoch=flow_loss_start_iter, flow_loss_thre=flow_loss_threshold, use_self_mask=not use_gt_mask,
                                num_total_iter=niter, empty_cache= len(filelist) > 72, batchify=not args.not_batchify)
     else:
@@ -168,12 +204,14 @@ def get_reconstructed_scene(args, outdir, model, device, silent, image_size, fil
     print('Global alignment done!')
 
     # PARAMETERS
-    scale_factor = torch.abs(scene._get_scale_factor())
+    
+    scale_factor = scene._get_scale_factor()
     translation_X = scene._get_trans_X()
     rotation_X = scene._get_quat_X()
     parameters_X = [scale_factor, translation_X, rotation_X]
     print("----- PARAMETERS -----")
     if scale_factor is not None:
+        scale_factor = torch.abs(scale_factor)
         print(f"Scale factor: {scale_factor}")
         print(f"Scaled translation: {scale_factor * translation_X}")
         print(f"Rotation: {rotation_X}")
@@ -185,7 +223,7 @@ def get_reconstructed_scene(args, outdir, model, device, silent, image_size, fil
     os.makedirs(save_folder, exist_ok=True)
 
     outfile = get_3D_model_from_scene(save_folder, silent, scene, min_conf_thr, as_pointcloud, mask_sky,
-                            clean_depth, transparent_cams, cam_size, show_cam, parameters_X=parameters_X)
+                            clean_depth, transparent_cams, cam_size, show_cam, parameters_X=parameters_X, object_masks=msks)
 
     poses = scene.save_tum_poses(f'{save_folder}/pred_traj.txt')
     K = scene.save_intrinsics(f'{save_folder}/pred_intrinsics.txt')

@@ -12,20 +12,42 @@ from dust3r.utils.flow_vis import flow_to_image
 
 def convert_scene_output_to_glb(outdir, imgs, pts3d, mask, focals, cams2world, cam_size=0.05, show_cam=True,
                                  cam_color=None, as_pointcloud=False,
-                                 transparent_cams=False, silent=False, save_name=None):
+                                 transparent_cams=False, silent=False, save_name=None, object_pts3d=None, all_msk_obj=None):
     assert len(pts3d) == len(mask) <= len(imgs) <= len(cams2world) == len(focals)
     pts3d = to_numpy(pts3d)
     imgs = to_numpy(imgs)
     focals = to_numpy(focals)
     cams2world = to_numpy(cams2world)
+    if object_pts3d is not None:
+        object_pts3d = to_numpy(object_pts3d)
+        
     scene = trimesh.Scene()
 
     # full pointcloud
     if as_pointcloud:
         pts = np.concatenate([p[m] for p, m in zip(pts3d, mask)])
+        print("Shape of pts:", pts.shape) 
         col = np.concatenate([p[m] for p, m in zip(imgs, mask)])
         pct = trimesh.PointCloud(pts.reshape(-1, 3), colors=col.reshape(-1, 3))
-        scene.add_geometry(pct)
+        valid_msk = np.isfinite(pts.sum(axis=1))
+        valid_pts = pts[valid_msk]
+        print("Shape of valid_pts:", valid_pts.shape)  # Expected: (N, 3)
+        valid_col = col[valid_msk]
+
+        if object_pts3d is not None:
+            pts_obj = np.concatenate([p for p in object_pts3d])
+            print("Shape of pts_obj:", pts_obj.shape)  # Expected: (M, 3)
+            # valid_mask_obj = np.isfinite(pts_obj.sum(axis=1))
+            # valid_pts_obj = pts_obj[valid_mask_obj]
+            
+            random_color = np.random.rand(3)  # Random color for the object
+            obj_color_mask = np.isin(valid_pts, pts_obj, assume_unique=False).all(axis=1)
+            # valid_col[obj_color_mask] = [1, 0, 0]  # Red color for object points
+            valid_col[obj_color_mask] = random_color  # Random color for object points
+
+        pct_updated = trimesh.PointCloud(valid_pts, colors=valid_col)
+        scene.add_geometry(pct_updated)
+        # scene.add_geometry(pct)
     else:
         meshes = []
         for i in range(len(imgs)):
@@ -51,8 +73,8 @@ def convert_scene_output_to_glb(outdir, imgs, pts3d, mask, focals, cams2world, c
                 scene.add_geometry(cam_axis)
 
     # Add world reference frame
-    world_axis = trimesh.creation.axis(origin_size=0.01, axis_length=0.1)
-    scene.add_geometry(world_axis)
+    # world_axis = trimesh.creation.axis(origin_size=0.01, axis_length=0.1)
+    # scene.add_geometry(world_axis)
 
     rot = np.eye(4)
     rot[:3, :3] = Rotation.from_euler('y', np.deg2rad(180)).as_matrix()

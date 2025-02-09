@@ -249,6 +249,7 @@ class BasePCOptimizer (nn.Module):
 
     def get_masks(self):
         if self.thr_for_init_conf:
+            print(f"Conf shape {self.init_conf_maps[0].shape}")
             return [(conf > self.min_conf_thr) for conf in self.init_conf_maps]
         else:
             return [(conf > self.min_conf_thr) for conf in self.im_conf]
@@ -295,7 +296,7 @@ class BasePCOptimizer (nn.Module):
         cams = inv(self.get_im_poses())
         K = self.get_intrinsics()
         depthmaps = self.get_depthmaps()
-        all_pts3d = self.get_pts3d()
+        all_pts3d, _ = self.get_pts3d()
         new_im_confs = clean_pointcloud(self.im_conf, K, cams, depthmaps, all_pts3d, **kw)
 
         for i, new_conf in enumerate(new_im_confs):
@@ -540,6 +541,9 @@ def clean_pointcloud( im_confs, K, cams, depthmaps, all_pts3d,
     1) express all 3d points in each camera coordinate frame
     2) if they're in front of a depthmap --> then lower their confidence
     """
+
+    print("All points 3D: ", len(all_pts3d))
+    print("Shape of all_pts3d: ", all_pts3d[0].shape)
     assert len(im_confs) == len(cams) == len(K) == len(depthmaps) == len(all_pts3d)
     assert 0 <= tol < 1
     res = [c.clone() for c in im_confs]
