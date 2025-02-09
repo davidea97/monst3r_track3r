@@ -32,4 +32,4 @@ dino_checkpoint: Grounded_SAM_2/gdino_checkpoints/groundingdino_swint_ogc.pth
 box_threshold: 0.4
 text_threshold: 0.35
 floor: False
-text_object_prompt: remote control .
+text_object_prompt: remote control . dark box

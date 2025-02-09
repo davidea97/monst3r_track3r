@@ -619,24 +619,28 @@ class PointCloudOptimizer(BasePCOptimizer):
 
     def object_pts3d(self, masks_list, rel_ptmaps):
         masked_pts_list = []
-        for i, mask in enumerate(masks_list):  # Assume `masks_list` contains 10 masks
+        masked_pts_dict = {}
+        for i, mask in enumerate(masks_list):
             unique_masks = np.unique(mask)  # Find unique values in mask_flat
-            pts3d_object = []
             for mask_value in unique_masks:
                 if mask_value == 0:
                     continue
                 object_mask = (mask == mask_value)
                 mask_tensor = torch.tensor(object_mask, dtype=torch.bool, device=rel_ptmaps.device)
                 flattened_mask = mask_tensor.view(-1)
-                # print("Object mask: ", object_mask)
-                # print("Shape of object mask: ", object_mask.shape)
-                num_ones = np.count_nonzero(object_mask)
-                # print(f"Number of ones (True values) in object mask: {num_ones}")
-                pts3d_object.append(rel_ptmaps[i][flattened_mask])  # Points where mask == mask_value (object)
-            
-            masked_pts_list.append(pts3d_object)
 
-        return masked_pts_list
+                # Collect points corresponding to the current mask_value
+                masked_points = rel_ptmaps[i][flattened_mask] 
+
+                # Store in a dictionary where the key is the mask value
+                if mask_value not in masked_pts_dict:
+                    masked_pts_dict[mask_value] = []
+                masked_pts_dict[mask_value].append(masked_points)
+
+        # Convert the dictionary to a list format if needed
+        masked_pts_list_transposed = list(masked_pts_dict.values()) 
+
+        return masked_pts_list_transposed
 
 
     def depth_to_pts3d(self):

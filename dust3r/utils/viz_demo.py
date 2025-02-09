@@ -24,20 +24,14 @@ def convert_scene_output_to_glb(outdir, imgs, pts3d, mask, focals, cams2world, c
     # full pointcloud
     if as_pointcloud:
         pts = np.concatenate([p[m] for p, m in zip(pts3d, mask)])
-        print("Shape of pts:", pts.shape) 
         col = np.concatenate([p[m] for p, m in zip(imgs, mask)])
         pct = trimesh.PointCloud(pts.reshape(-1, 3), colors=col.reshape(-1, 3))
         valid_msk = np.isfinite(pts.sum(axis=1))
         valid_pts = pts[valid_msk]
-        print("Shape of valid_pts:", valid_pts.shape)  # Expected: (N, 3)
         valid_col = col[valid_msk]
-
         if all_object_pts3d is not None:
             for i, object_pts3d in enumerate(all_object_pts3d):
                 pts_obj = np.concatenate([p for p in object_pts3d])
-                print("Shape of pts_obj:", pts_obj.shape)  # Expected: (M, 3)
-                # valid_mask_obj = np.isfinite(pts_obj.sum(axis=1))
-                # valid_pts_obj = pts_obj[valid_mask_obj]
                 
                 random_color = np.random.rand(3)  # Random color for the object
                 obj_color_mask = np.isin(valid_pts, pts_obj, assume_unique=False).all(axis=1)

@@ -102,14 +102,10 @@ def get_3D_model_from_scene(outdir, silent, scene, min_conf_thr=3, as_pointcloud
 
     # Get the confidence maps
     if object_masks is not None:
-        print("Len object masks: ", len(object_masks))
-        print("Shape object masks: ", object_masks[0].shape)
         unique_masks = np.unique(object_masks[0])
-        print("Unique masks: ", unique_masks)
         all_conf_object = [[None for _ in range(len(object_pts3d))] for _ in range(len(unique_masks)-1)]
         for i in range(len(object_pts3d)):
             confs_object = []
-            masks_bool = []
             unique_masks = np.unique(object_masks[i])
             for mask_value in unique_masks:
                 if mask_value == 0:
@@ -117,12 +113,10 @@ def get_3D_model_from_scene(outdir, silent, scene, min_conf_thr=3, as_pointcloud
                 mask_tensor = torch.from_numpy(object_masks[i]).to(pts3d[i].device)  # Convert mask to PyTorch tensor
                 mask_object = (mask_tensor == mask_value)
                 mask_bool = mask_object.bool()
-                # masks_bool.append(mask_bool)
                 conf_object = msk[i][mask_bool]
                 all_conf_object[mask_value-1][i] = conf_object
 
         all_msk_obj = []
-        print("Length of confs_object: ", len(confs_object))
         for conf_object in all_conf_object:
 
             valid_conf_object = [c for c in conf_object if c is not None]
