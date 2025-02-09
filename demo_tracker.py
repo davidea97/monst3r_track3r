@@ -102,7 +102,10 @@ def get_3D_model_from_scene(outdir, silent, scene, min_conf_thr=3, as_pointcloud
 
     # Get the confidence maps
     if object_masks is not None:
+        print("Len object masks: ", len(object_masks))
+        print("Shape object masks: ", object_masks[0].shape)
         unique_masks = np.unique(object_masks[0])
+        print("Unique masks: ", unique_masks)
         all_conf_object = [[None for _ in range(len(object_pts3d))] for _ in range(len(unique_masks)-1)]
         for i in range(len(object_pts3d)):
             confs_object = []
@@ -111,7 +114,7 @@ def get_3D_model_from_scene(outdir, silent, scene, min_conf_thr=3, as_pointcloud
             for mask_value in unique_masks:
                 if mask_value == 0:
                     continue
-                mask_tensor = torch.from_numpy(object_masks[i]).to(object_pts3d[i].device)  # Convert mask to PyTorch tensor
+                mask_tensor = torch.from_numpy(object_masks[i]).to(pts3d[i].device)  # Convert mask to PyTorch tensor
                 mask_object = (mask_tensor == mask_value)
                 mask_bool = mask_object.bool()
                 # masks_bool.append(mask_bool)
@@ -133,7 +136,7 @@ def get_3D_model_from_scene(outdir, silent, scene, min_conf_thr=3, as_pointcloud
     cam_color = [(255*c[0], 255*c[1], 255*c[2]) for c in cam_color]
     return convert_scene_output_to_glb(outdir, rgbimg, pts3d, msk, focals, cams2world, as_pointcloud=as_pointcloud,
                                         transparent_cams=transparent_cams, cam_size=cam_size, show_cam=show_cam, silent=silent, save_name=save_name,
-                                        cam_color=cam_color, object_pts3d=object_pts3d, all_msk_obj=all_msk_obj)
+                                        cam_color=cam_color, all_object_pts3d=object_pts3d, all_msk_obj=all_msk_obj)
 
 
 def get_reconstructed_scene(args, outdir, model, device, silent, image_size, filelist, intrinsic_params, dist_coeffs, mask_list, robot_poses, schedule, niter, min_conf_thr,

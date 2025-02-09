@@ -620,11 +620,22 @@ class PointCloudOptimizer(BasePCOptimizer):
     def object_pts3d(self, masks_list, rel_ptmaps):
         masked_pts_list = []
         for i, mask in enumerate(masks_list):  # Assume `masks_list` contains 10 masks
-            mask_tensor = torch.tensor(mask, dtype=torch.bool, device=rel_ptmaps.device)
-            flattened_mask = mask_tensor.view(-1)
-            masked_pts = rel_ptmaps[i][flattened_mask]
-            masked_pts_list.append(masked_pts)
-            # print(f"Mask {i}: {masked_pts.shape}")  # Shape of extracted 3D points
+            unique_masks = np.unique(mask)  # Find unique values in mask_flat
+            pts3d_object = []
+            for mask_value in unique_masks:
+                if mask_value == 0:
+                    continue
+                object_mask = (mask == mask_value)
+                mask_tensor = torch.tensor(object_mask, dtype=torch.bool, device=rel_ptmaps.device)
+                flattened_mask = mask_tensor.view(-1)
+                # print("Object mask: ", object_mask)
+                # print("Shape of object mask: ", object_mask.shape)
+                num_ones = np.count_nonzero(object_mask)
+                # print(f"Number of ones (True values) in object mask: {num_ones}")
+                pts3d_object.append(rel_ptmaps[i][flattened_mask])  # Points where mask == mask_value (object)
+            
+            masked_pts_list.append(pts3d_object)
+
         return masked_pts_list
 
 
@@ -640,6 +651,7 @@ class PointCloudOptimizer(BasePCOptimizer):
         transformed_ptmaps = geotrf(im_poses, rel_ptmaps)
         masks = self.get_object_masks()
         object_pts3d = self.object_pts3d(masks, transformed_ptmaps)
+        print("Object points len: ", len(object_pts3d))
         # project to world frame
         return transformed_ptmaps, object_pts3d
 
