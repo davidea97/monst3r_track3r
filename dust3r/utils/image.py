@@ -380,6 +380,8 @@ def load_masks(folder, image_list, size, square_ok=False, verbose=True):
         mask_path = mask_filenames.get(img_name, None)
 
         if mask_path:
+            # Load the mask
+            mask = PIL.Image.open(mask_path)
             # Load and process the mask
             mask = PIL.Image.open(mask_path).convert('L')  # Convert to grayscale
             W1, H1 = mask.size
@@ -404,7 +406,8 @@ def load_masks(folder, image_list, size, square_ok=False, verbose=True):
 
             # Convert to NumPy array
             mask_data = np.array(mask, dtype=np.uint8)
-
+            # Unique values in the mask
+            unique_values = np.unique(mask_data)
             if verbose:
                 print(f' - Found mask for {img_name}: {mask_path}, resized to {W}x{H}')
             aligned_masks.append(mask_data)  # Append processed mask

@@ -658,7 +658,7 @@ class PointCloudOptimizer(BasePCOptimizer):
                 if mask_value not in masked_pts_dict:
                     masked_pts_dict[mask_value] = []
                 masked_pts_dict[mask_value].append(masked_points)
-
+        
         # Convert the dictionary to a list format if needed
         masked_pts_list_transposed = list(masked_pts_dict.values()) 
 
@@ -875,8 +875,8 @@ class PointCloudOptimizer(BasePCOptimizer):
             weight_calib = 0
             calibration_loss_value = 0
 
-        if calibration_loss_value is None:
-            raise ValueError("calibration_loss_value è None")
+        # if calibration_loss_value is None:
+        #     raise ValueError("calibration_loss_value è None")
         
         # Manually set to 0
         # self.temporal_smoothing_weight = 0 # It enabes the temporal smoothing loss; i.e., the similarity between adjacent frames
@@ -889,7 +889,7 @@ class PointCloudOptimizer(BasePCOptimizer):
         # print(f'loss: {loss.item()}')
         if quat_X is not None:
             quat_X.data = quat_X.data / quat_X.data.norm()
-        print(f"Calibration loss: {calibration_loss_value}")
+        # print(f"Calibration loss: {calibration_loss_value}")
         # print(f"Quat_X: {quat_X}")
         # print(f"Trans X: {trans_X}")
         # print(f"Scale factor: {scale_factor}")

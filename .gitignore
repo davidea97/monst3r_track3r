@@ -157,3 +157,5 @@ dataset
 dynamic_masks
 init_dynamic_masks
 ref_dynamic_masks
+
+object_0*

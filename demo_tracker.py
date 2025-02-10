@@ -26,12 +26,13 @@ from dust3r.cloud_opt import global_aligner, GlobalAlignerMode
 from dust3r.utils.viz_demo import convert_scene_output_to_glb, get_dynamic_mask_from_pairviewer
 import shutil
 import matplotlib.pyplot as pl
-
+import open3d as o3d
 import cv2
 import sys
 
 sys.path.append(os.path.abspath("Grounded_SAM_2"))
 from Grounded_SAM_2.sam2_mask_tracking import MaskGenerator 
+from object_tracker import ObjectTracker
 
 # from .utils.general_utils import generate_image_list, generate_mask_list, read_intrinsics
 
@@ -110,7 +111,7 @@ def get_3D_model_from_scene(outdir, silent, scene, min_conf_thr=3, as_pointcloud
             for mask_value in unique_masks:
                 if mask_value == 0:
                     continue
-                mask_tensor = torch.from_numpy(object_masks[i]).to(pts3d[i].device)  # Convert mask to PyTorch tensor
+                mask_tensor = torch.from_numpy(object_masks[i])  # Convert mask to PyTorch tensor
                 mask_object = (mask_tensor == mask_value)
                 mask_bool = mask_object.bool()
                 conf_object = msk[i][mask_bool]
@@ -130,6 +131,22 @@ def get_3D_model_from_scene(outdir, silent, scene, min_conf_thr=3, as_pointcloud
     cmap = pl.get_cmap('viridis')
     cam_color = [cmap(i/len(rgbimg))[:3] for i in range(len(rgbimg))]
     cam_color = [(255*c[0], 255*c[1], 255*c[2]) for c in cam_color]
+
+    # Add the tracking part
+    object_tracker = ObjectTracker(all_3d_obj_pts=object_pts3d, all_obj_msks=all_msk_obj)
+
+    for i, obj in enumerate(object_tracker._get_all_3d_object_pts()):
+        for j, obj_3d_pts in enumerate(obj):
+            print("Object shape: ", obj_3d_pts.shape)
+            # Convert numpy array to Open3D point cloud
+            pcd = o3d.geometry.PointCloud()
+            pcd.points = o3d.utility.Vector3dVector(obj_3d_pts)
+
+            # Save as PLY file
+            filename = f"object_{i}_{j}.ply"
+            o3d.io.write_point_cloud(filename, pcd)
+
+            
     return convert_scene_output_to_glb(outdir, rgbimg, pts3d, msk, focals, cams2world, as_pointcloud=as_pointcloud,
                                         transparent_cams=transparent_cams, cam_size=cam_size, show_cam=show_cam, silent=silent, save_name=save_name,
                                         cam_color=cam_color, all_object_pts3d=object_pts3d, all_msk_obj=all_msk_obj)
@@ -545,6 +562,7 @@ if __name__ == '__main__':
         mask_generator = MaskGenerator(config, image_sublist, subfolders)
         print("Generating masks...")
         objects, image_ext = mask_generator.generate_masks()
+        print("Objects: ", objects)
         mask_list = generate_mask_list(args.input_folder, image_sublist, image_ext=image_ext)
 
     intrinsic_params_vec = []
