@@ -193,7 +193,7 @@ def get_reconstructed_scene(args, outdir, model, device, silent, image_size, fil
         mode = GlobalAlignerMode.PairViewer
         scene = global_aligner(output, device=device, mode=mode, verbose=not silent)
     
-    lr = 0.01
+    lr = 0.2
 
     if mode == GlobalAlignerMode.PointCloudOptimizer:
         loss = scene.compute_global_alignment(init='mst', niter=niter, schedule=schedule, lr=lr)
@@ -539,12 +539,13 @@ if __name__ == '__main__':
     else:
         image_sublist = image_list
 
+    image_ext = None
+    mask_list = None
     if args.mask:
         mask_generator = MaskGenerator(config, image_sublist, subfolders)
         print("Generating masks...")
         objects, image_ext = mask_generator.generate_masks()
-    mask_list = generate_mask_list(args.input_folder, image_sublist, image_ext)
-    print("Mask list: ", mask_list)
+        mask_list = generate_mask_list(args.input_folder, image_sublist, image_ext=image_ext)
 
     intrinsic_params_vec = []
     dist_coeffs = []

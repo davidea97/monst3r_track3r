@@ -13,6 +13,7 @@ from dust3r.utils.device import to_cpu, to_numpy
 from dust3r.utils.goem_opt import DepthBasedWarping, OccMask, WarpImage, depth_regularization_si_weighted, tum_to_pose_matrix
 from third_party.raft import load_RAFT
 from dust3r.utils.file_utils import *
+import matplotlib.pyplot as plt
 
 from sam2.build_sam import build_sam2_video_predictor
 sam2_checkpoint = "third_party/sam2/checkpoints/sam2.1_hiera_large.pt"
@@ -172,13 +173,23 @@ class PointCloudOptimizer(BasePCOptimizer):
                 end_idx = min(i + chunk_size, num_pairs)
                 imgs_ij = [torch.tensor(pair_imgs[0][i:end_idx]).float().to(device),
                         torch.tensor(pair_imgs[1][i:end_idx]).float().to(device)]
-                flow_ij.append(flow_net(imgs_ij[0].permute(0, 3, 1, 2) * 255, 
-                                        imgs_ij[1].permute(0, 3, 1, 2) * 255, 
-                                        iters=20, test_mode=True)[1])
-                flow_ji.append(flow_net(imgs_ij[1].permute(0, 3, 1, 2) * 255, 
+                flow_ij_chunk = flow_net(imgs_ij[0].permute(0, 3, 1, 2) * 255, 
+                                     imgs_ij[1].permute(0, 3, 1, 2) * 255, 
+                                     iters=20, test_mode=True)[1]
+                flow_ji_chunk = flow_net(imgs_ij[1].permute(0, 3, 1, 2) * 255, 
                                         imgs_ij[0].permute(0, 3, 1, 2) * 255, 
-                                        iters=20, test_mode=True)[1])
+                                        iters=20, test_mode=True)[1]
 
+                # if self.masks is not None:
+                #     mask_i = torch.stack([torch.from_numpy(self.masks[idx]) for idx in self._ei[i:end_idx]]).to(device).unsqueeze(1)
+                #     mask_j = torch.stack([torch.from_numpy(self.masks[idx]) for idx in self._ej[i:end_idx]]).to(device).unsqueeze(1)
+
+                #     flow_ij_chunk *= (1 - mask_i)  # Zero out flow in dynamic regions
+                #     flow_ji_chunk *= (1 - mask_j)
+
+                flow_ij.append(flow_ij_chunk)
+                flow_ji.append(flow_ji_chunk)
+            
             flow_ij = torch.cat(flow_ij, dim=0)
             flow_ji = torch.cat(flow_ji, dim=0)
             valid_mask_i = get_valid_flow_mask(flow_ij, flow_ji)
@@ -188,6 +199,7 @@ class PointCloudOptimizer(BasePCOptimizer):
         if flow_net is not None: del flow_net
         return flow_ij, flow_ji, valid_mask_i, valid_mask_j
 
+    
     def get_motion_mask_from_pairs(self, view1, view2, pred1, pred2):
         assert self.is_symmetrized, 'only support symmetric case'
         symmetry_pairs_idx = [(i, i+len(self.edges)//2) for i in range(len(self.edges)//2)]
@@ -260,10 +272,16 @@ class PointCloudOptimizer(BasePCOptimizer):
         
         for i in range(self.n_imgs):
             self.dynamic_masks[i] = torch.stack(self.dynamic_masks[i]).mean(dim=0) > self.motion_mask_thre
+        
+        gt_pixels = [np.count_nonzero(mask) for mask in self.masks]
+        estimated_pixels = [torch.count_nonzero(mask).item() for mask in self.dynamic_masks]
 
         if self.masks is not None:
             for i in range(len(self.masks)):
+                
                 self.dynamic_masks[i] = torch.from_numpy(self.masks[i])
+
+                
 
 
     def get_object_masks(self):
@@ -862,7 +880,8 @@ class PointCloudOptimizer(BasePCOptimizer):
         
         # Manually set to 0
         # self.temporal_smoothing_weight = 0 # It enabes the temporal smoothing loss; i.e., the similarity between adjacent frames
-        # self.flow_loss_weight = 0
+        if self.masks is not None:
+            self.flow_loss_weight = 0
 
         loss = (li + lj) * 1 + self.temporal_smoothing_weight * temporal_smoothing_loss + \
                 self.flow_loss_weight * flow_loss + self.depth_regularize_weight * depth_prior_loss + weight_calib* calibration_loss_value

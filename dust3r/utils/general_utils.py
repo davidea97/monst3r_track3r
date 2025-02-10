@@ -44,7 +44,7 @@ def generate_image_list(folder_path):
     return image_list, subfolders
 
 
-def generate_mask_list(folder_path, image_list, image_ext):
+def generate_mask_list(folder_path, image_list, image_ext=None):
     """
     Generates a list of mask image paths organized by subfolders (e.g., camera1, camera2, etc.),
     but only includes folders that contain a "mask" subfolder.
@@ -55,6 +55,7 @@ def generate_mask_list(folder_path, image_list, image_ext):
     Returns:
         list of lists: A list where each sublist contains paths to mask images from one camera folder.
     """
+    
     # Get all subdirectories within the folder_path
     subfolders = sorted([
         os.path.join(folder_path, d) for d in os.listdir(folder_path)
