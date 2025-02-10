@@ -124,6 +124,8 @@ def get_3D_model_from_scene(outdir, silent, scene, min_conf_thr=3, as_pointcloud
             # Now apply the comparison to the valid conf_object elements
             msk_obj = to_numpy([c > min_conf_thr for c in valid_conf_object])
             all_msk_obj.append(msk_obj)
+    else:
+        all_msk_obj = None
 
     cmap = pl.get_cmap('viridis')
     cam_color = [cmap(i/len(rgbimg))[:3] for i in range(len(rgbimg))]
@@ -154,6 +156,9 @@ def get_reconstructed_scene(args, outdir, model, device, silent, image_size, fil
 
     if args.mask:
         msks = load_masks(mask_list, filelist, size=config['image_size'], verbose=not config['silent'])
+        msks = msks[0]
+    else:
+        msks = None
 
     if args.use_intrinsics:
         intrinsic_params = intrinsic_params
@@ -167,11 +172,6 @@ def get_reconstructed_scene(args, outdir, model, device, silent, image_size, fil
 
     if args.use_robot_motion:
         robot_poses = robot_poses
-    print("MASKS: ", len(msks[0]))
-    msks = msks[0]
-    # Print how many True values are in the mask
-    for i in range(len(msks)):
-        print("Number of True values in mask ", i, ": ", np.sum(msks[i]))
 
     if len(imgs) == 1:
         imgs = [imgs[0], copy.deepcopy(imgs[0])]
@@ -193,7 +193,7 @@ def get_reconstructed_scene(args, outdir, model, device, silent, image_size, fil
         mode = GlobalAlignerMode.PairViewer
         scene = global_aligner(output, device=device, mode=mode, verbose=not silent)
     
-    lr = 0.2
+    lr = 0.01
 
     if mode == GlobalAlignerMode.PointCloudOptimizer:
         loss = scene.compute_global_alignment(init='mst', niter=niter, schedule=schedule, lr=lr)
@@ -201,7 +201,6 @@ def get_reconstructed_scene(args, outdir, model, device, silent, image_size, fil
     print('Global alignment done!')
 
     # PARAMETERS
-    
     scale_factor = scene._get_scale_factor()
     translation_X = scene._get_trans_X()
     rotation_X = scene._get_quat_X()
@@ -543,8 +542,9 @@ if __name__ == '__main__':
     if args.mask:
         mask_generator = MaskGenerator(config, image_sublist, subfolders)
         print("Generating masks...")
-        objects = mask_generator.generate_masks()
-    mask_list = generate_mask_list(args.input_folder, image_sublist)
+        objects, image_ext = mask_generator.generate_masks()
+    mask_list = generate_mask_list(args.input_folder, image_sublist, image_ext)
+    print("Mask list: ", mask_list)
 
     intrinsic_params_vec = []
     dist_coeffs = []
@@ -579,60 +579,3 @@ if __name__ == '__main__':
 
     main_demo(tmpdirname, model, args.device, args.image_size, server_name, args.server_port, silent=args.silent, args=args, 
                   input_files=input_files, intrinsic_params=intrinsic_params, dist_coeffs=dist_coeff, mask_list=mask_list, robot_poses=robot_pose)
-
-    # if input_dir is None:
-    #     # Process images in the input directory with default parameters
-    #     image_input_dir = os.path.join(input_dir, 'image')
-    #     print("Image input dir: ", image_input_dir)
-    #     if os.path.isdir(image_input_dir):    # input_dir is a directory of images
-    #         print("Input files: ", input_files)
-
-
-    #     if args.real_time:
-    #         recon_fun = functools.partial(get_reconstructed_scene_realtime, args, model, args.device, args.silent, args.image_size)
-    #         outfile = recon_fun(
-    #             filelist=input_files,
-    #             scenegraph_type='oneref_mid',
-    #             refid=0,
-    #             seq_name=args.seq_name,
-    #             fps=args.fps,
-    #             num_frames=num_frames,
-    #         )
-    #     else:
-    #         recon_fun = functools.partial(get_reconstructed_scene, args, tmpdirname, model, args.device, args.silent, args.image_size)
-    #         # Call the function with default parameters
-    #         scene, outfile, imgs = recon_fun(
-    #             filelist=input_files,
-    #             intrinsic_params=intrinsic_params,
-    #             dist_coeffs=dist_coeff,
-    #             mask_list=mask_list,
-    #             robot_poses=robot_pose,
-    #             schedule='linear',
-    #             niter=300,
-    #             min_conf_thr=1.1,
-    #             as_pointcloud=True,
-    #             mask_sky=False,
-    #             clean_depth=True,
-    #             transparent_cams=False,
-    #             cam_size=0.05,
-    #             show_cam=True,
-    #             scenegraph_type='swinstride',
-    #             winsize=5,
-    #             refid=0,
-    #             seq_name=args.seq_name,
-    #             new_model_weights=args.weights,
-    #             temporal_smoothing_weight=0.01,
-    #             translation_weight='1.0',
-    #             shared_focal=True,
-    #             flow_loss_weight=0.01,
-    #             flow_loss_start_iter=0.1,
-    #             flow_loss_threshold=25,
-    #             use_gt_mask=args.use_gt_davis_masks,
-    #             fps=args.fps,
-    #             num_frames=num_frames,
-    #         )
-    #     print(f"Processing completed. Output saved in {tmpdirname}/{args.seq_name}")
-    # else:
-    #     # Launch Gradio demo
-    #     main_demo(tmpdirname, model, args.device, args.image_size, server_name, args.server_port, silent=args.silent, args=args, 
-    #               input_files=input_files, intrinsic_params=intrinsic_params, dist_coeffs=dist_coeffs, mask_list=mask_list, robot_poses=robot_poses)

@@ -372,6 +372,8 @@ def load_masks(folder, image_list, size, square_ok=False, verbose=True):
 
     mask_filenames = {os.path.splitext(os.path.basename(path))[0]: path for path in mask_paths}
     img_filenames = {os.path.splitext(os.path.basename(path))[0]: path for path in image_list}
+    # print(f"MASK FILENAMES: {mask_filenames}")
+    # print(f"IMG FILENAMES: {img_filenames}")
 
     # Align masks with the image list
     for img_name in img_filenames:

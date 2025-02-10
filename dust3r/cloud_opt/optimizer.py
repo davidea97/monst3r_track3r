@@ -39,7 +39,7 @@ class PointCloudOptimizer(BasePCOptimizer):
     # DAVIDE changed motion_mask_thre, it's default value is 0.35
     def __init__(self, *args, optimize_pp=False, focal_break=20, shared_focal=False, intrinsic_params=None, dist_coeffs=None, robot_poses=None, masks=None, flow_loss_fn='smooth_l1', flow_loss_weight=0.0, 
                  depth_regularize_weight=0.1, num_total_iter=300, temporal_smoothing_weight=0, translation_weight=0.1, flow_loss_start_epoch=0.15, flow_loss_thre=50,
-                 sintel_ckpt=False, use_self_mask=False, pxl_thre=50, sam2_mask_refine=True, motion_mask_thre=10, batchify=True, **kwargs):
+                 sintel_ckpt=False, use_self_mask=False, pxl_thre=50, sam2_mask_refine=True, motion_mask_thre=0.35, batchify=True, **kwargs):
         super().__init__(*args, **kwargs)
 
         self.has_im_poses = True  # by definition of this class
@@ -55,7 +55,7 @@ class PointCloudOptimizer(BasePCOptimizer):
         self.motion_mask_thre = motion_mask_thre
         self.batchify = batchify
         self.robot_poses = robot_poses
-        self.masks = masks
+        self.masks = masks 
 
         # adding thing to optimize
         self.im_depthmaps = nn.ParameterList(torch.randn(H, W)/10-3 for H, W in self.imshapes)  # log(depth)
@@ -252,7 +252,6 @@ class PointCloudOptimizer(BasePCOptimizer):
         err_map_i = (err_map_i - err_map_i.amin(dim=(1, 2), keepdim=True)) / (err_map_i.amax(dim=(1, 2), keepdim=True) - err_map_i.amin(dim=(1, 2), keepdim=True))
         err_map_j = (err_map_j - err_map_j.amin(dim=(1, 2), keepdim=True)) / (err_map_j.amax(dim=(1, 2), keepdim=True) - err_map_j.amin(dim=(1, 2), keepdim=True))
         self.dynamic_masks = [[] for _ in range(self.n_imgs)]
-
         for i, j in symmetry_pairs_idx:
             i_idx = self._ei[i]
             j_idx = self._ej[i]
@@ -261,6 +260,11 @@ class PointCloudOptimizer(BasePCOptimizer):
         
         for i in range(self.n_imgs):
             self.dynamic_masks[i] = torch.stack(self.dynamic_masks[i]).mean(dim=0) > self.motion_mask_thre
+
+        if self.masks is not None:
+            for i in range(len(self.masks)):
+                self.dynamic_masks[i] = torch.from_numpy(self.masks[i])
+
 
     def get_object_masks(self):
         return self.masks
@@ -617,7 +621,7 @@ class PointCloudOptimizer(BasePCOptimizer):
         else:
             return self.get_depthmaps_non_batch()
 
-    def object_pts3d(self, masks_list, rel_ptmaps):
+    def get_object_pts3d(self, masks_list, rel_ptmaps):
         masked_pts_list = []
         masked_pts_dict = {}
         for i, mask in enumerate(masks_list):
@@ -654,8 +658,10 @@ class PointCloudOptimizer(BasePCOptimizer):
         rel_ptmaps = _fast_depthmap_to_pts3d(depth, self._grid, focals, pp=pp)
         transformed_ptmaps = geotrf(im_poses, rel_ptmaps)
         masks = self.get_object_masks()
-        object_pts3d = self.object_pts3d(masks, transformed_ptmaps)
-        print("Object points len: ", len(object_pts3d))
+        if masks is not None:
+            object_pts3d = self.get_object_pts3d(masks, transformed_ptmaps)
+        else:
+            object_pts3d = None
         # project to world frame
         return transformed_ptmaps, object_pts3d
 
@@ -808,13 +814,11 @@ class PointCloudOptimizer(BasePCOptimizer):
             ego_flow_1_2, _ = self.depth_wrapper(R1, T1, R2, T2, disp_1, K_2, inv_K_1)
             ego_flow_2_1, _ = self.depth_wrapper(R2, T2, R1, T1, disp_2, K_1, inv_K_2)
             dynamic_masks_all = torch.stack(self.dynamic_masks).to(self.device).unsqueeze(1)
-            true_counts = dynamic_masks_all.sum(dim=(2, 3))  # Sum over height & width dimensions
             dynamic_mask1, dynamic_mask2 = dynamic_masks_all[self._ei], dynamic_masks_all[self._ej]
-
             flow_loss_i = self.flow_loss_fn(ego_flow_1_2[:, :2, ...], self.flow_ij, ~dynamic_mask1, per_pixel_thre=self.pxl_thre)
             flow_loss_j = self.flow_loss_fn(ego_flow_2_1[:, :2, ...], self.flow_ji, ~dynamic_mask2, per_pixel_thre=self.pxl_thre)
             flow_loss = flow_loss_i + flow_loss_j
-            # print(f'flow loss: {flow_loss.item()}')
+            print(f'flow loss: {flow_loss.item()}')
             if flow_loss.item() > self.flow_loss_thre and self.flow_loss_thre > 0: 
                 flow_loss = 0
                 self.flow_loss_flag = True
@@ -857,8 +861,8 @@ class PointCloudOptimizer(BasePCOptimizer):
             raise ValueError("calibration_loss_value è None")
         
         # Manually set to 0
-        self.temporal_smoothing_weight = 0 # It enabes the temporal smoothing loss; i.e., the similarity between adjacent frames
-        self.flow_loss_weight = 0
+        # self.temporal_smoothing_weight = 0 # It enabes the temporal smoothing loss; i.e., the similarity between adjacent frames
+        # self.flow_loss_weight = 0
 
         loss = (li + lj) * 1 + self.temporal_smoothing_weight * temporal_smoothing_loss + \
                 self.flow_loss_weight * flow_loss + self.depth_regularize_weight * depth_prior_loss + weight_calib* calibration_loss_value

@@ -44,7 +44,7 @@ def generate_image_list(folder_path):
     return image_list, subfolders
 
 
-def generate_mask_list(folder_path, image_list):
+def generate_mask_list(folder_path, image_list, image_ext):
     """
     Generates a list of mask image paths organized by subfolders (e.g., camera1, camera2, etc.),
     but only includes folders that contain a "mask" subfolder.
@@ -69,12 +69,10 @@ def generate_mask_list(folder_path, image_list):
         if not os.path.exists(mask_folder) or not os.path.isdir(mask_folder):
             print(f"Skipping: {mask_folder} (does not exist)")
             continue
-
+        
         # Find all .png files in the "mask" subfolder (adjust for other extensions if needed)
-        mask_paths = glob.glob(os.path.join(mask_folder, "*.png"))
+        mask_paths = glob.glob(os.path.join(mask_folder, f"*{image_ext}"))
 
-        # Normalize paths to use forward slashes for compatibility
-        #mask_paths = np.empty(len(image_list[i]))
         mask_paths = [path.replace("\\", "/") for path in mask_paths]
         # Sort the paths to ensure consistent ordering
         mask_paths.sort()

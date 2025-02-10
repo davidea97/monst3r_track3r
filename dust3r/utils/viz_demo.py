@@ -40,6 +40,9 @@ def convert_scene_output_to_glb(outdir, imgs, pts3d, mask, focals, cams2world, c
 
             pct_updated = trimesh.PointCloud(valid_pts, colors=valid_col)
             scene.add_geometry(pct_updated)
+        else:
+            pct = trimesh.PointCloud(pts.reshape(-1, 3), colors=col.reshape(-1, 3))
+            scene.add_geometry(pct)
         # scene.add_geometry(pct)
     else:
         meshes = []
