@@ -106,7 +106,6 @@ def get_3D_model_from_scene(outdir, silent, scene, min_conf_thr=3, as_pointcloud
         unique_masks = np.unique(object_masks[0])
         all_conf_object = [[None for _ in range(len(object_pts3d))] for _ in range(len(unique_masks)-1)]
         for i in range(len(object_pts3d)):
-            confs_object = []
             unique_masks = np.unique(object_masks[i])
             for mask_value in unique_masks:
                 if mask_value == 0:
@@ -135,21 +134,14 @@ def get_3D_model_from_scene(outdir, silent, scene, min_conf_thr=3, as_pointcloud
     # Add the tracking part
     object_tracker = ObjectTracker(all_3d_obj_pts=object_pts3d, all_obj_msks=all_msk_obj)
 
-    for i, obj in enumerate(object_tracker._get_all_3d_object_pts()):
-        for j, obj_3d_pts in enumerate(obj):
-            print("Object shape: ", obj_3d_pts.shape)
-            # Convert numpy array to Open3D point cloud
-            pcd = o3d.geometry.PointCloud()
-            pcd.points = o3d.utility.Vector3dVector(obj_3d_pts)
-
-            # Save as PLY file
-            filename = f"object_{i}_{j}.ply"
-            o3d.io.write_point_cloud(filename, pcd)
-
+    gedi_transformation, gedi_cam2w = object_tracker._get_gedi_obj_track()
+    save_obj_traj = object_tracker.save_obj_poses(f'{outdir}/obj_traj.txt', gedi_cam2w[0])
+    # icp_transformation, icp_cam2w = object_tracker._get_icp_obj_track()
+    # save_obj_traj = object_tracker.save_obj_poses(f'{outdir}/obj_traj.txt', icp_cam2w[0])
             
     return convert_scene_output_to_glb(outdir, rgbimg, pts3d, msk, focals, cams2world, as_pointcloud=as_pointcloud,
                                         transparent_cams=transparent_cams, cam_size=cam_size, show_cam=show_cam, silent=silent, save_name=save_name,
-                                        cam_color=cam_color, all_object_pts3d=object_pts3d, all_msk_obj=all_msk_obj)
+                                        cam_color=cam_color, all_object_pts3d=object_pts3d, all_msk_obj=all_msk_obj, tracking_transformation=gedi_transformation)
 
 
 def get_reconstructed_scene(args, outdir, model, device, silent, image_size, filelist, intrinsic_params, dist_coeffs, mask_list, robot_poses, schedule, niter, min_conf_thr,

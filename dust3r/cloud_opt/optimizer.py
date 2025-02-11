@@ -562,11 +562,6 @@ class PointCloudOptimizer(BasePCOptimizer):
     def get_im_poses_batch(self):  # cam to world
         
         cam2world = self._get_poses(self.im_poses)
-        R_z = torch.tensor([[-1, 0, 0, 0], 
-                        [0, -1, 0, 0], 
-                        [0, 0, 1, 0],
-                        [0, 0, 0, 1]], device=self.device, dtype=self.im_poses[0].dtype)
-        cam2world_transformed = R_z @ cam2world
 
         return cam2world
 
@@ -862,8 +857,8 @@ class PointCloudOptimizer(BasePCOptimizer):
         if scale_factor is not None:
             scale_factor = torch.abs(scale_factor)
         
-        if robot_poses is None or scale_factor is None or quat_X is None or trans_X is None:
-            print("Uno o più parametri di calibrazione sono None")
+        # if robot_poses is None or scale_factor is None or quat_X is None or trans_X is None:
+        #     print("Uno o più parametri di calibrazione sono None")
 
         if quat_X is not None:
             calibration_loss_value = self.calibration_loss(cam2w, robot_poses, scale_factor, quat_X, trans_X)

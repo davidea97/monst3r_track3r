@@ -4,7 +4,7 @@ import torch.nn.functional as F
 import torchgeometry as tgm
 import numpy as np
 # import open3d.ml.torch as ml3d
-from backbones.pointnet2_ops_lib.pointnet2_ops.pointnet2_modules import PointnetSAModule
+from gedi.backbones.pointnet2_ops_lib.pointnet2_ops.pointnet2_modules import PointnetSAModule
 
 
 class tnet(nn.Module):

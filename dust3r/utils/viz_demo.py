@@ -11,8 +11,8 @@ from datasets_preprocess.sintel_get_dynamics import compute_optical_flow
 from dust3r.utils.flow_vis import flow_to_image
 
 def convert_scene_output_to_glb(outdir, imgs, pts3d, mask, focals, cams2world, cam_size=0.05, show_cam=True,
-                                 cam_color=None, as_pointcloud=False,
-                                 transparent_cams=False, silent=False, save_name=None, all_object_pts3d=None, all_msk_obj=None):
+                                 cam_color=None, as_pointcloud=False, transparent_cams=False, silent=False, 
+                                 save_name=None, all_object_pts3d=None, all_msk_obj=None, tracking_transformation=None):
     assert len(pts3d) == len(mask) <= len(imgs) <= len(cams2world) == len(focals)
     pts3d = to_numpy(pts3d)
     imgs = to_numpy(imgs)
@@ -37,6 +37,21 @@ def convert_scene_output_to_glb(outdir, imgs, pts3d, mask, focals, cams2world, c
                 obj_color_mask = np.isin(valid_pts, pts_obj, assume_unique=False).all(axis=1)
                 # valid_col[obj_color_mask] = [1, 0, 0]  # Red color for object points
                 valid_col[obj_color_mask] = random_color  # Random color for object points
+
+                if tracking_transformation is not None:
+
+                    previous_transform = np.eye(4)  # Start with identity
+                    for j, pts_3d_obj in enumerate(object_pts3d):
+                        obj_frame = trimesh.creation.axis(origin_size=0.005, axis_length=0.1)
+                        obj_transform = np.eye(4)
+                        # Compute the new centroid by applying the transformation to the previous centroid
+                        obj_transform = previous_transform @ tracking_transformation[i][j]
+                        
+                        obj_frame.apply_transform(obj_transform)
+                        scene.add_geometry(obj_frame)
+
+                        # Update the previous transform to be used in the next iteration
+                        previous_transform = obj_transform
 
             pct_updated = trimesh.PointCloud(valid_pts, colors=valid_col)
             scene.add_geometry(pct_updated)
