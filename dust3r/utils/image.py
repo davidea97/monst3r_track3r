@@ -8,6 +8,7 @@ import os
 import torch
 import numpy as np
 import PIL.Image
+from PIL import Image
 from PIL.ImageOps import exif_transpose
 import torchvision.transforms as tvf
 os.environ["OPENCV_IO_ENABLE_OPENEXR"] = "1"
@@ -112,9 +113,11 @@ def rgb(ftensor, true_shape=None):
 def _resize_pil_image(img, long_edge_size, nearest=False):
     S = max(img.size)
     if S > long_edge_size:
-        interp = PIL.Image.LANCZOS if not nearest else PIL.Image.NEAREST
+        # interp = PIL.Image.LANCZOS if not nearest else PIL.Image.NEAREST
+        interp = PIL.Image.NEAREST # DAVIDE
     elif S <= long_edge_size:
-        interp = PIL.Image.BICUBIC
+        # interp = PIL.Image.BICUBIC
+        interp = PIL.Image.NEAREST # DAVIDE
     new_size = tuple(int(round(x*long_edge_size/S)) for x in img.size)
     return img.resize(new_size, interp)
 
@@ -372,18 +375,41 @@ def load_masks(folder, image_list, size, square_ok=False, verbose=True):
 
     mask_filenames = {os.path.splitext(os.path.basename(path))[0]: path for path in mask_paths}
     img_filenames = {os.path.splitext(os.path.basename(path))[0]: path for path in image_list}
-    # print(f"MASK FILENAMES: {mask_filenames}")
-    # print(f"IMG FILENAMES: {img_filenames}")
+
+    # save_dir = "saved_masks_after"
+    # os.makedirs(save_dir, exist_ok=True)  # Create directory if not exists
+
+    # save_dir = "saved_masks_after_after"
+    # os.makedirs(save_dir, exist_ok=True) 
 
     # Align masks with the image list
-    for img_name in img_filenames:
+    for i, img_name in enumerate(img_filenames):
         mask_path = mask_filenames.get(img_name, None)
 
         if mask_path:
             # Load the mask
             mask = PIL.Image.open(mask_path)
+
+            # unique_values = np.unique(np.array(mask))  # Get unique object values
+            # print(f"Processing mask {i} - Unique values: {unique_values}")
+
+            # for value in unique_values:
+            #     if value == 0:
+            #         continue  # Skip background
+
+            #     # Create a binary mask for this object (0 for background, 255 for object)
+            #     binary_mask = (np.array(mask) == value).astype(np.uint8) * 255  
+
+            #     # Convert to PIL Image (grayscale mode 'L')
+            #     mask_image = Image.fromarray(binary_mask, mode="L")
+
+            #     # Save the mask
+            #     mask_filename = os.path.join(save_dir, f"object_{i}_value_{value}.png")
+            #     mask_image.save(mask_filename)
+            #     print(f"Saved: {mask_filename}")
+                
             # Load and process the mask
-            mask = PIL.Image.open(mask_path).convert('L')  # Convert to grayscale
+            # mask = PIL.Image.open(mask_path).convert('L')  # Convert to grayscale
             W1, H1 = mask.size
 
             # Resize and crop
@@ -406,8 +432,27 @@ def load_masks(folder, image_list, size, square_ok=False, verbose=True):
 
             # Convert to NumPy array
             mask_data = np.array(mask, dtype=np.uint8)
-            # Unique values in the mask
-            unique_values = np.unique(mask_data)
+            
+            # unique_values = np.unique(np.array(mask_data))  # Get unique object values
+            # print(f"Processing mask {i} - Unique values: {unique_values}")
+
+
+            # for value in unique_values:
+            #     if value == 0:
+            #         continue  # Skip background
+
+            #     # Create a binary mask for this object (0 for background, 255 for object)
+            #     binary_mask = (mask_data == value).astype(np.uint8) * 255  
+
+            #     # Convert to PIL Image (grayscale mode 'L')
+            #     mask_image = Image.fromarray(binary_mask, mode="L")
+
+            #     # Save the mask
+            #     mask_filename = os.path.join(save_dir, f"object_{i}_value_{value}.png")
+            #     mask_image.save(mask_filename)
+            #     print(f"Saved: {mask_filename}")
+
+
             if verbose:
                 print(f' - Found mask for {img_name}: {mask_path}, resized to {W}x{H}')
             aligned_masks.append(mask_data)  # Append processed mask
@@ -415,6 +460,7 @@ def load_masks(folder, image_list, size, square_ok=False, verbose=True):
             if verbose:
                 print(f' - No mask found for {img_name}')
             aligned_masks.append(None)  # Append None if mask is missing
+
     aligned_masks_total.append(aligned_masks)
 
     return aligned_masks_total

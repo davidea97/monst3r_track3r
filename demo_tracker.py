@@ -29,6 +29,7 @@ import matplotlib.pyplot as pl
 import open3d as o3d
 import cv2
 import sys
+from PIL import Image
 
 sys.path.append(os.path.abspath("Grounded_SAM_2"))
 from Grounded_SAM_2.sam2_mask_tracking import MaskGenerator 
@@ -88,10 +89,11 @@ def get_3D_model_from_scene(outdir, silent, scene, min_conf_thr=3, as_pointcloud
     focals = scene.get_focals().cpu()
     cams2world = scene.get_im_poses().cpu()
 
+
     if parameters_X[0] is not None:
         cams2world = scene.get_relative_poses(cams2world, scale_factor=parameters_X[0].item())
     # 3D pointcloud from depthmap, poses and intrinsics
-    pts3d, object_pts3d = to_numpy(scene.get_pts3d(raw_pts=True))
+    pts3d, object_pts3d = to_numpy(scene.get_pts3d(raw_pts=True)) # Object pts include the 3d points belonging to each object 
     if parameters_X[0] is not None:
         scaled_pts3d = [p * parameters_X[0].item() for p in pts3d]
         scaled_object_pts3d = [p * parameters_X[0].item() for p in object_pts3d]
@@ -101,39 +103,61 @@ def get_3D_model_from_scene(outdir, silent, scene, min_conf_thr=3, as_pointcloud
     scene.thr_for_init_conf = thr_for_init_conf
     msk = to_numpy(scene.get_masks())
 
+    # print("Len object pts3d: ", len(object_pts3d))
+    # print("Shape object pts3d: ", len(object_pts3d[0]))
     # Get the confidence maps
-    if object_masks is not None:
-        unique_masks = np.unique(object_masks[0])
-        all_conf_object = [[None for _ in range(len(object_pts3d))] for _ in range(len(unique_masks)-1)]
-        for i in range(len(object_pts3d)):
-            unique_masks = np.unique(object_masks[i])
-            for mask_value in unique_masks:
-                if mask_value == 0:
-                    continue
-                mask_tensor = torch.from_numpy(object_masks[i])  # Convert mask to PyTorch tensor
-                mask_object = (mask_tensor == mask_value)
-                mask_bool = mask_object.bool()
-                conf_object = msk[i][mask_bool]
-                all_conf_object[mask_value-1][i] = conf_object
+    # object_masks = object_masks[0]
+    # if object_masks is not None:
+    #     unique_masks = np.unique(object_masks[0])
+    #     all_conf_object = [[None for _ in range(len(object_masks))] for _ in range(len(unique_masks)-1)]
+    #     print("Len all conf object: ", len(all_conf_object))
+    #     print("Len first conf object: ", len(all_conf_object[0]))
+    #     for i in range(len(object_masks)):
+    #         unique_masks = np.unique(object_masks[i])
+    #         for mask_value in unique_masks:
+    #             if mask_value == 0:
+    #                 continue
+    #             mask_tensor = torch.from_numpy(object_masks[i])  # Convert mask to PyTorch tensor
+    #             mask_object = (mask_tensor == mask_value)
+    #             mask_bool = mask_object.bool()
+    #             conf_object = msk[i][mask_bool]
+    #             all_conf_object[mask_value-1][i] = conf_object
 
-        all_msk_obj = []
-        for conf_object in all_conf_object:
+    #     print("Len all conf object: ", len(all_conf_object))
+    #     print("Len first conf object: ", len(all_conf_object[0]))
+    #     print("Shape first conf object: ", all_conf_object[0][0].shape)
 
-            valid_conf_object = [c for c in conf_object if c is not None]
+    #     all_msk_obj = []
+    #     for conf_object in all_conf_object:
 
-            # Now apply the comparison to the valid conf_object elements
-            msk_obj = to_numpy([c > min_conf_thr for c in valid_conf_object])
-            all_msk_obj.append(msk_obj)
-    else:
-        all_msk_obj = None
+    #         valid_conf_object = [c for c in conf_object if c is not None]
+    #         print("Len valid conf object: ", len(valid_conf_object))
+    #         # Now apply the comparison to the valid conf_object elements
+    #         msk_obj = to_numpy([c > min_conf_thr for c in valid_conf_object])
+    #         print("Len msk obj: ", len(msk_obj))
+    #         all_msk_obj.append(msk_obj)
+    # else:
+    #     all_msk_obj = None
+
 
     cmap = pl.get_cmap('viridis')
     cam_color = [cmap(i/len(rgbimg))[:3] for i in range(len(rgbimg))]
     cam_color = [(255*c[0], 255*c[1], 255*c[2]) for c in cam_color]
 
     # Add the tracking part
-    object_tracker = ObjectTracker(all_3d_obj_pts=object_pts3d, all_obj_msks=all_msk_obj)
-
+    object_tracker = ObjectTracker(all_3d_obj_pts=object_pts3d, obj_msks=object_masks, imagelist=rgbimg)
+    
+    # Get Dino features from images
+    dino_patch_features, bbox_vec, valid_patches_vec = object_tracker._get_dino_patch_features()
+    # dino_cls_embeddings = object_tracker._get_dino_cls_embeddings()
+    
+    # Project 2d DINO features onto the 3d points
+    # for i, dino_features in enumerate(dino_patch_features):
+    #     print(f"Processing frame {i}")
+    #     mapped_3d_points, dino_features_3d = object_tracker.map_dino_features_to_3d(dino_features, valid_patches_vec[i], pts3d[i], bbox_vec[i])
+    #     print(f"Number of 3D points: {mapped_3d_points.shape}")
+    #     print(f"Number of DINO features: {dino_features_3d.shape}")
+    
     gedi_transformation, gedi_cam2w = object_tracker._get_gedi_obj_track()
     save_obj_traj = object_tracker.save_obj_poses(f'{outdir}/obj_traj.txt', gedi_cam2w[0])
     # icp_transformation, icp_cam2w = object_tracker._get_icp_obj_track()
@@ -141,7 +165,7 @@ def get_3D_model_from_scene(outdir, silent, scene, min_conf_thr=3, as_pointcloud
             
     return convert_scene_output_to_glb(outdir, rgbimg, pts3d, msk, focals, cams2world, as_pointcloud=as_pointcloud,
                                         transparent_cams=transparent_cams, cam_size=cam_size, show_cam=show_cam, silent=silent, save_name=save_name,
-                                        cam_color=cam_color, all_object_pts3d=object_pts3d, all_msk_obj=all_msk_obj, tracking_transformation=gedi_transformation)
+                                        cam_color=cam_color, all_object_pts3d=object_pts3d, all_msk_obj=object_masks, tracking_transformation=gedi_transformation)
 
 
 def get_reconstructed_scene(args, outdir, model, device, silent, image_size, filelist, intrinsic_params, dist_coeffs, mask_list, robot_poses, schedule, niter, min_conf_thr,
@@ -195,7 +219,7 @@ def get_reconstructed_scene(args, outdir, model, device, silent, image_size, fil
     
     if len(imgs) > 2:
         mode = GlobalAlignerMode.PointCloudOptimizer  
-        scene = global_aligner(output, device=device, mode=mode, verbose=not silent, shared_focal = shared_focal, intrinsic_params=intrinsic_params, dist_coeffs=dist_coeffs, robot_poses=robot_poses, masks=msks, temporal_smoothing_weight=temporal_smoothing_weight, translation_weight=translation_weight,
+        scene = global_aligner(output, device=device, mode=mode, verbose=not silent, shared_focal = shared_focal, filelist=filelist, intrinsic_params=intrinsic_params, dist_coeffs=dist_coeffs, robot_poses=robot_poses, masks=msks, temporal_smoothing_weight=temporal_smoothing_weight, translation_weight=translation_weight,
                                flow_loss_weight=flow_loss_weight, flow_loss_start_epoch=flow_loss_start_iter, flow_loss_thre=flow_loss_threshold, use_self_mask=not use_gt_mask,
                                num_total_iter=niter, empty_cache= len(filelist) > 72, batchify=not args.not_batchify)
     else:

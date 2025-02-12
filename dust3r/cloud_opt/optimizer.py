@@ -38,7 +38,7 @@ class PointCloudOptimizer(BasePCOptimizer):
     """
 
     # DAVIDE changed motion_mask_thre, it's default value is 0.35
-    def __init__(self, *args, optimize_pp=False, focal_break=20, shared_focal=False, intrinsic_params=None, dist_coeffs=None, robot_poses=None, masks=None, flow_loss_fn='smooth_l1', flow_loss_weight=0.0, 
+    def __init__(self, *args, optimize_pp=False, focal_break=20, shared_focal=False, filelist=None, intrinsic_params=None, dist_coeffs=None, robot_poses=None, masks=None, flow_loss_fn='smooth_l1', flow_loss_weight=0.0, 
                  depth_regularize_weight=0.1, num_total_iter=300, temporal_smoothing_weight=0, translation_weight=0.1, flow_loss_start_epoch=0.15, flow_loss_thre=50,
                  sintel_ckpt=False, use_self_mask=False, pxl_thre=50, sam2_mask_refine=True, motion_mask_thre=0.35, batchify=True, **kwargs):
         super().__init__(*args, **kwargs)
@@ -57,7 +57,7 @@ class PointCloudOptimizer(BasePCOptimizer):
         self.batchify = batchify
         self.robot_poses = robot_poses
         self.masks = masks 
-
+        self.imagelist = filelist
         # adding thing to optimize
         self.im_depthmaps = nn.ParameterList(torch.randn(H, W)/10-3 for H, W in self.imshapes)  # log(depth)
         self.im_poses = nn.ParameterList(self.rand_pose(self.POSE_DIM) for _ in range(self.n_imgs))  # camera poses
@@ -180,13 +180,6 @@ class PointCloudOptimizer(BasePCOptimizer):
                                         imgs_ij[0].permute(0, 3, 1, 2) * 255, 
                                         iters=20, test_mode=True)[1]
 
-                # if self.masks is not None:
-                #     mask_i = torch.stack([torch.from_numpy(self.masks[idx]) for idx in self._ei[i:end_idx]]).to(device).unsqueeze(1)
-                #     mask_j = torch.stack([torch.from_numpy(self.masks[idx]) for idx in self._ej[i:end_idx]]).to(device).unsqueeze(1)
-
-                #     flow_ij_chunk *= (1 - mask_i)  # Zero out flow in dynamic regions
-                #     flow_ji_chunk *= (1 - mask_j)
-
                 flow_ij.append(flow_ij_chunk)
                 flow_ji.append(flow_ji_chunk)
             
@@ -273,9 +266,6 @@ class PointCloudOptimizer(BasePCOptimizer):
         for i in range(self.n_imgs):
             self.dynamic_masks[i] = torch.stack(self.dynamic_masks[i]).mean(dim=0) > self.motion_mask_thre
         
-        gt_pixels = [np.count_nonzero(mask) for mask in self.masks]
-        estimated_pixels = [torch.count_nonzero(mask).item() for mask in self.dynamic_masks]
-
         if self.masks is not None:
             for i in range(len(self.masks)):
                 
