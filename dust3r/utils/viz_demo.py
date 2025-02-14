@@ -48,8 +48,7 @@ def convert_scene_output_to_glb(outdir, imgs, pts3d, mask, focals, cams2world, c
                         obj_transform = previous_transform @ tracking_transformation[i][j]
                         
                         obj_frame.apply_transform(obj_transform)
-                        if j==0:
-                            scene.add_geometry(obj_frame)
+                        scene.add_geometry(obj_frame)
 
                         # Update the previous transform to be used in the next iteration
                         previous_transform = obj_transform
