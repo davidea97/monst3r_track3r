@@ -22,7 +22,7 @@ class ObjectTracker:
                 'fchkpt_gedi_net': 'gedi/data/chkpts/3dmatch/chkpt.tar'}    # path to checkpoint
         
         self.voxel_size = .01
-        self.patches_per_pair = 5000
+        self.patches_per_pair = 3000
 
         # initialising class
         self.gedi = GeDi(config=config)
@@ -270,11 +270,7 @@ class ObjectTracker:
         dino_valid_patch_features = []
         all_3d_pts_features = []
         for i, image_path in enumerate(self.imagelist):
-            # _, patch_features = self.extract_dino_features(image_path)
-            # bboxes = self.get_bboxes_from_mask(self.obj_msks[i])
             bboxes = self.get_squares_bboxes_from_mask(self.obj_msks[i])
-            # TODO: first step directly add a square box 224x224, then a square box smaller fitting the object, at the end try with bbox from mask
-            # print(f"Bboxes for image {i}: {bboxes}")
             all_valid_dino_features, all_3d_pts = self._extract_dino_features_from_mask(image_path, bboxes, self.obj_msks[i], self.pts3d[i])
             dino_valid_patch_features.append(all_valid_dino_features)
             all_3d_pts_features.append(all_3d_pts)
@@ -470,83 +466,94 @@ class ObjectTracker:
         dino_transformation = [[] for _ in range(self._get_object_quantity())]
         dino_obj2world = [[] for _ in range(self._get_object_quantity())]
         for i, obj in enumerate(self._get_all_3d_object_pts()):
-            # Compute tracking for object i
+
             print(">> Tracking object ", i)
-            # Compute centroid of the first object
+
             identity_transform = self.create_first_frame(obj)
-
-            # Insert identity transformation at the start
             dino_transformation[i].append(identity_transform)
-
-            # TODO: add the first frame initializations, for example PCA, etc..
             dino_obj2world[i].append(identity_transform)
             current_cam2world = identity_transform
-            print(f"Initial transformation (Identity at centroid) for object {i}:")
-            print(identity_transform)
 
             for j in range(1, len(obj)):
 
-                pcd0_pts = np.vstack(obj[j-1])  # Scene j-1 (Nx3)
-                pcd1_pts = np.vstack(obj[j])    # Scene j (Mx3)
-
-                print("Number of points in scene ", j-1, ": ", pcd0_pts.shape)
-                print("Number of points in scene ", j, ": ", pcd1_pts.shape)
-
-                dino0_desc = np.vstack(dino_valid_patch_features[i][j-1])   # (S, 768)
-                dino1_desc = np.vstack(dino_valid_patch_features[i][j])     # (S, 768)
+                pcd0_pts = np.vstack(valid_3d_pts_t[i][j-1])  # Scene j-1 (Nx3)
+                pcd1_pts = np.vstack(valid_3d_pts_t[i][j])    # Scene j (Mx3)
 
                 # Convert to Open3D PointCloud
                 pcd0 = o3d.geometry.PointCloud()
                 pcd0.points = o3d.utility.Vector3dVector(pcd0_pts)
 
                 pcd1 = o3d.geometry.PointCloud()
-                pcd1.points = o3d.utility.Vector3dVector(pcd1_pts)
-                
+                pcd1.points = o3d.utility.Vector3dVector(pcd1_pts)   
                 
                 print("Before outlier removal:")
                 print(f"Number of points in scene {j-1}: {np.asarray(pcd0.points).shape}")
                 print(f"Number of points in scene {j}: {np.asarray(pcd1.points).shape}")
 
-                cl, ind = pcd0.remove_statistical_outlier(nb_neighbors=30, std_ratio=2.0)
+                _, ind = pcd0.remove_statistical_outlier(nb_neighbors=30, std_ratio=1.0)
                 pcd0 = pcd0.select_by_index(ind)  # Keep only the inliers
 
-                cl, ind = pcd1.remove_statistical_outlier(nb_neighbors=30, std_ratio=2.0)
+                _, ind = pcd1.remove_statistical_outlier(nb_neighbors=30, std_ratio=1.0)
                 pcd1 = pcd1.select_by_index(ind)  # Keep only the inliers
-
-                pcd0.paint_uniform_color([1, 0.706, 0])
-                pcd1.paint_uniform_color([0, 0.651, 0.929])
-                
-                # o3d.visualization.draw_geometries([pcd0, pcd1])
-                # SAVE THE POINT CLOUDS
-                # o3d.io.write_point_cloud(f"pcd0_{j-1}.ply", pcd0)
 
                 print("After outlier removal:")
                 print(f"Number of points in scene {j-1}: {np.asarray(pcd0.points).shape}")
                 print(f"Number of points in scene {j}: {np.asarray(pcd1.points).shape}")
-
+                
+                pcd0.paint_uniform_color([1, 0.706, 0])
+                pcd1.paint_uniform_color([0, 0.651, 0.929])
+                
+                o3d.visualization.draw_geometries([pcd0, pcd1])
+                
                 # Estimate normals (only for visualization)
                 pcd0.estimate_normals()
                 pcd1.estimate_normals()
 
-                pts0 = torch.tensor(np.asarray(pcd0.points)).float()
-                pts1 = torch.tensor(np.asarray(pcd1.points)).float()
+
+                num_points_pcd0 = np.asarray(pcd0.points).shape[0]
+                num_points_pcd1 = np.asarray(pcd1.points).shape[0]
+
+                patches0 = min(self.patches_per_pair, num_points_pcd0)
+                patches1 = min(self.patches_per_pair, num_points_pcd1)
+
+                # randomly sampling some points from the point cloud
+                inds0 = np.random.choice(np.asarray(pcd0.points).shape[0], patches0, replace=False)
+                inds1 = np.random.choice(np.asarray(pcd1.points).shape[0], patches1, replace=False)
+                
+                pts0 = torch.tensor(np.asarray(pcd0.points)[inds0]).float()
+                pts1 = torch.tensor(np.asarray(pcd1.points)[inds1]).float()
+                
+                # pts0 = torch.tensor(np.asarray(pcd0.points)).float()
+                # pts1 = torch.tensor(np.asarray(pcd1.points)).float()
 
                 print("Number of pts0: ", pts0.shape)
                 print("Number of pts1: ", pts1.shape)
+
+                pcd0 = pcd0.voxel_down_sample(self.voxel_size)
+                pcd1 = pcd1.voxel_down_sample(self.voxel_size)
 
                 _pcd0 = torch.tensor(np.asarray(pcd0.points)).float()
                 _pcd1 = torch.tensor(np.asarray(pcd1.points)).float()
 
                 print("Gedi descriptor extraction...")
                 # Compute GeDi descriptors
-                gedi0_desc = self.gedi.compute(pts=torch.tensor(valid_3d_pts_t[i][j-1]).float(), pcd=_pcd0)
-                gedi1_desc = self.gedi.compute(pts=torch.tensor(valid_3d_pts_t[i][j]).float(), pcd=_pcd1)
+                gedi0_desc = self.gedi.compute(pts=torch.tensor(valid_3d_pts_t[i][j-1][inds0]).float(), pcd=_pcd0)
+                gedi1_desc = self.gedi.compute(pts=torch.tensor(valid_3d_pts_t[i][j][inds1]).float(), pcd=_pcd1)
+                
+                print(f"Number of GeDi descriptors in scene {j-1}: {gedi0_desc.shape}")
+                print(f"Number of GeDi descriptors in scene {j}: {gedi1_desc.shape}")
 
-                random_indices = np.random.choice(768, 64, replace=False)
+                print("Dino descriptor extraction...")
+                # random_indices = np.random.choice(768, 64, replace=False)
+
+                dino0_desc = np.vstack(dino_valid_patch_features[i][j-1][inds0])   # (S, 768)
+                dino1_desc = np.vstack(dino_valid_patch_features[i][j][inds1])     # (S, 768)
 
                 # Reduce DINO descriptors to 64 dimensions
-                dino0_desc_reduced = dino0_desc[:, random_indices]  # (S0, 64)
-                dino1_desc_reduced = dino1_desc[:, random_indices]  # (S1, 64)
+                dino0_desc_reduced = dino0_desc  
+                dino1_desc_reduced = dino1_desc
+                print(f"Number of DINO descriptors in scene {j-1}: {dino0_desc_reduced.shape}")
+                print(f"Number of DINO descriptors in scene {j}: {dino1_desc_reduced.shape}")
 
                 # Concatenate GeDi + DINO descriptors
                 combined0_desc = np.hstack((gedi0_desc, dino0_desc_reduced))  # (S0, GeDi_dim + 768)
@@ -574,12 +581,12 @@ class ObjectTracker:
                     pcd0_dsdv,
                     pcd1_dsdv,
                     mutual_filter=False,
-                    max_correspondence_distance=.005,
+                    max_correspondence_distance=.0001,
                     estimation_method=o3d.pipelines.registration.TransformationEstimationPointToPoint(False),
                     ransac_n=3,
                     checkers=[o3d.pipelines.registration.CorrespondenceCheckerBasedOnEdgeLength(.9),
                             o3d.pipelines.registration.CorrespondenceCheckerBasedOnDistance(.02)],
-                    criteria=o3d.pipelines.registration.RANSACConvergenceCriteria(50000, 1000))
+                    criteria=o3d.pipelines.registration.RANSACConvergenceCriteria(100000, 5000))
 
 
                 # Refine with ICP

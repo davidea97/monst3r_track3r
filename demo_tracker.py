@@ -34,6 +34,7 @@ from PIL import Image
 sys.path.append(os.path.abspath("Grounded_SAM_2"))
 from Grounded_SAM_2.sam2_mask_tracking import MaskGenerator 
 from object_tracker import ObjectTracker
+from object_track import ObjectTrack
 
 # from .utils.general_utils import generate_image_list, generate_mask_list, read_intrinsics
 
@@ -88,7 +89,7 @@ def get_3D_model_from_scene(outdir, silent, scene, min_conf_thr=3, as_pointcloud
     rgbimg = scene.imgs
     focals = scene.get_focals().cpu()
     cams2world = scene.get_im_poses().cpu()
-
+    imagelist = scene.imagelist
 
     if parameters_X[0] is not None:
         cams2world = scene.get_relative_poses(cams2world, scale_factor=parameters_X[0].item())
@@ -108,22 +109,25 @@ def get_3D_model_from_scene(outdir, silent, scene, min_conf_thr=3, as_pointcloud
     cam_color = [(255*c[0], 255*c[1], 255*c[2]) for c in cam_color]
 
     # Add the tracking part
-    object_tracker = ObjectTracker(all_3d_obj_pts=object_pts3d, obj_msks=object_masks, imagelist=rgbimg, pts3d=pts3d)
+    # object_tracker = ObjectTracker(all_3d_obj_pts=object_pts3d, obj_msks=object_masks, imagelist=rgbimg, pts3d=pts3d)
     
-    # Get Dino features from images
-    dino_valid_patch_features, valid_3d_pts = object_tracker._get_3d_dino_patch_features()
+    object_tracker = ObjectTrack(all_3d_obj_pts=object_pts3d, obj_msks=object_masks, imagelist=rgbimg, pts3d=pts3d)
+    object_tracker.extract_dino_features()
+
+    # # Get Dino features from images
+    # dino_valid_patch_features, valid_3d_pts = object_tracker._get_3d_dino_patch_features()
     
-    valid_3d_pts_t = list(map(list, zip(*valid_3d_pts)))
-    dino_valid_patch_features = list(map(list, zip(*dino_valid_patch_features)))
+    # valid_3d_pts_t = list(map(list, zip(*valid_3d_pts)))
+    # dino_valid_patch_features = list(map(list, zip(*dino_valid_patch_features)))
 
 
-    dino_transformation, dino_cam2w = object_tracker._get_dino_obj_track(valid_3d_pts_t, dino_valid_patch_features)
-    for i, dino_cam2w_object in enumerate(dino_cam2w):
-        save_obj_traj = object_tracker.save_obj_poses(f'{outdir}/obj_traj_{i}.txt', dino_cam2w[i])
+    # dino_transformation, dino_cam2w = object_tracker._get_dino_obj_track(valid_3d_pts_t, dino_valid_patch_features)
+    # for i, dino_cam2w_object in enumerate(dino_cam2w):
+    #     save_obj_traj = object_tracker.save_obj_poses(f'{outdir}/obj_traj_{i}.txt', dino_cam2w[i])
             
     return convert_scene_output_to_glb(outdir, rgbimg, pts3d, msk, focals, cams2world, as_pointcloud=as_pointcloud,
                                         transparent_cams=transparent_cams, cam_size=cam_size, show_cam=show_cam, silent=silent, save_name=save_name,
-                                        cam_color=cam_color, all_object_pts3d=object_pts3d, all_msk_obj=object_masks, tracking_transformation=dino_transformation)
+                                        cam_color=cam_color, all_object_pts3d=object_pts3d, all_msk_obj=object_masks, tracking_transformation=None)
 
 
 def get_reconstructed_scene(args, outdir, model, device, silent, image_size, filelist, intrinsic_params, dist_coeffs, mask_list, robot_poses, schedule, niter, min_conf_thr,
