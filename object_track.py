@@ -7,13 +7,15 @@ from dust3r.cloud_opt.base_opt import c2w_to_tumpose
 from transformers import AutoProcessor, AutoModel
 from PIL import Image
 import dino_extract
+import superpoint_extract
 import tensorflow as tf
 import matplotlib.pyplot as plt
 import cv2
+from sklearn.decomposition import PCA
+
 
 DINO_FEATURE_DIM_B = 768
 DINO_FEATURE_DIM_L = 1024
-DINO_FEATURE_DIM_G = 1536
 
 class ObjectTrack:
     def __init__(self, all_3d_obj_pts, obj_msks, imagelist, pts3d):
@@ -22,8 +24,10 @@ class ObjectTrack:
         self.imagelist = imagelist
         self.pts3d = pts3d
         dino_export="./models/dinov2_vitl14_pretrain.pth"
+        sp_export="./models/sp_v6"
 
         self.dino_extract = dino_extract.DINOExtract(dino_export, feature_layer=1)
+        # self.sp_extract = superpoint_extract.SuperPointExtract(sp_export)
         
         # config = {'dim': 32,                                                # descriptor output dimension
         #         'samples_per_batch': 500,                                   # batches to process the data on GPU
@@ -111,29 +115,69 @@ class ObjectTrack:
 
         return np.array(sampled_coords)
 
+    def dino_image_visualization(self, all_dino_descriptors, imagelist, masks):
+
+        all_dino_images = []
+
+        for j in range(self._get_object_quantity()):
+            all_dino_descriptors_vis = np.concatenate(all_dino_descriptors[j], axis=0)
+
+            pca = PCA(n_components=3)
+            pca.fit(all_dino_descriptors_vis)
+            dino_images = []
+
+            for i in range(len(imagelist)):
+                image = imagelist[i]
+                output_image = image.copy()
+
+                mask_coords = np.argwhere(masks[i] == j+1)
+                mask_coords = mask_coords[:, [1, 0]]
+
+                dino_descriptors = all_dino_descriptors[j][i]
+
+                dino_descriptors_np = dino_descriptors.numpy()
+
+                # Apply the SAME PCA transformation
+                pca_features = pca.transform(dino_descriptors_np)  # Shape (N, 3)
+
+                # Normalize PCA output to [0, 255]
+                pca_features = (pca_features - pca_features.min(axis=0)) / (pca_features.max(axis=0) - pca_features.min(axis=0) + 1e-6)
+                pca_features = (pca_features * 255).astype(np.uint8)
+
+                # Draw PCA-colored points
+                for k, (x, y) in enumerate(mask_coords):
+                    color = tuple(map(int, pca_features[k]))  
+                    cv2.circle(output_image, (x, y), radius=2, color=color, thickness=-1, lineType=cv2.LINE_AA)
+
+                dino_images.append(output_image)
+                cv2.imwrite(f"output_image_{j}_{i}.png", output_image)
+
+            all_dino_images.append(dino_images)
+        
+        return all_dino_images
+
     def extract_dino_features(self):
-        print("Shape object masks: ", len(self.obj_msks))
-        print("Unique values in object masks: ", np.unique(self.obj_msks[0]))
-        color_map = plt.get_cmap('jet')
+        # print("Shape object masks: ", len(self.obj_msks))
+        # print("Unique values in object masks: ", np.unique(self.obj_msks[0]))
+        all_dino_descriptors = []
         for i, image_path in enumerate(self.imagelist):
             # image = np.array(Image.open(image_path).convert("RGB"))
             image = self.imagelist[i]
             height, width = image.shape[:2]
-            print(f"Image Shape: {image.shape}")
-            output_image = image.copy()
-            output_image = np.array(image, dtype=np.uint8).copy()
+
+            dino_descriptors_objs = []
             # Extract DINO features for each object in the image
-            # bboxes = self.get_squares_bboxes_from_mask(self.obj_msks[i])
             for j in range(self._get_object_quantity()):  # Loop over all objects in the image
                 
-                print("Image Shape: ", image.shape)
+                mask = (self.obj_msks[i] == j + 1).astype(np.uint8)
                 dino_features = self.dino_extract(image)
-                print(f"DINO Features Shape: {dino_features.shape}")
+                # sp_features = self.sp_extract(image, mask)
+
+                # TODO: check if the mask has to be resized
+                # mask = self.dino_extract._resize_input_image(self.obj_msks[i])
                 mask_coords = np.argwhere(self.obj_msks[i] == j+1)
-                # mask_coords = self.sample_mask_on_grid_center(self.obj_msks[i] == j+1, dino_features.shape)
-                mask_coords = mask_coords[:, [1, 0]]
-                print("Mask shape: ", self.obj_msks[i].shape)
-                
+                mask_coords = mask_coords[:, [1, 0]]                
+
                 dino_descriptors = dino_extract.get_dino_descriptors(
                     dino_features,
                     tf.convert_to_tensor(mask_coords, dtype=tf.float32),
@@ -141,31 +185,16 @@ class ObjectTrack:
                     tf.convert_to_tensor(width, dtype=tf.int32),
                     DINO_FEATURE_DIM_L,
                 )
-                print(f"DINO Descriptors Shape: {dino_descriptors.shape}")
-                # print(f"DINO Features Shape: {dino_features.shape}")
-                # Compute descriptor magnitudes
-                descriptor_magnitudes = np.linalg.norm(dino_descriptors, axis=1)
-                print(f"Descriptor Magnitudes Min: {np.min(descriptor_magnitudes)}, Max: {np.max(descriptor_magnitudes)}")
 
-                # Avoid division by a small number: add a small constant
-                eps = 1e-6
-                descriptor_magnitudes = (descriptor_magnitudes - np.min(descriptor_magnitudes)) / (np.max(descriptor_magnitudes) - np.min(descriptor_magnitudes) + eps)
+                dino_descriptors_objs.append(dino_descriptors)
 
-                # Get corresponding colors (mapped to [0, 255] for OpenCV)
-                colors = color_map(descriptor_magnitudes)[:, :3] * 255  # Convert to RGB
+            all_dino_descriptors.append(dino_descriptors_objs)
 
-                # Normalize the values to [0, 1] and get corresponding colors
-                # colors = color_map(descriptor_magnitudes / np.max(descriptor_magnitudes))[:, :3] * 255  # Convert to RGB
+        all_dino_descriptors = list(map(list, zip(*all_dino_descriptors)))
 
-                print("Output Image Shape: ", output_image.shape)
-                
-                # Draw colored points onto the output image
-                for k, (x, y) in enumerate(mask_coords):
-                    color = tuple(map(int, colors[k]))  # Convert to tuple of ints for OpenCV
-                    cv2.circle(output_image, (x, y), radius=2, color=color, thickness=-1, lineType=cv2.LINE_AA)
+        dino_images = self.dino_image_visualization(all_dino_descriptors, self.imagelist, self.obj_msks)
 
-            # save the image
-            cv2.imwrite(f"output_image_{i}_{j}.png", output_image)  # Saves in [0,255] automatically
+        return all_dino_descriptors, dino_images
 
     def get_squares_bboxes_from_mask(self, mask):
         """
@@ -211,6 +240,38 @@ class ObjectTrack:
 
             # Append square bbox
             bboxes.append((new_x_min, new_y_min, new_x_max, new_y_max))
+
+        return bboxes
+    
+    def get_bboxes_from_mask(self, mask):
+        """
+        Extracts squared bounding boxes (BBoxes) from a multi-instance mask.
+
+        Parameters:
+            mask (numpy.array): Mask (H, W) with multiple object values (each object has a unique integer value).
+
+        Returns:
+            list of tuples: List of squared bounding boxes [(x_min, y_min, x_max, y_max)].
+        """
+        unique_values = np.unique(mask)  # Get unique object values
+        bboxes = []
+        H, W = mask.shape  # Image dimensions
+
+        for value in unique_values:
+            if value == 0:
+                continue  # Skip background
+
+            # Get non-zero pixels (object region for this value)
+            coords = np.argwhere(mask == value)
+            if coords.shape[0] == 0:
+                continue  # No object found for this value
+
+            # Compute bounding box from min/max coordinates
+            y_min, x_min = coords.min(axis=0)
+            y_max, x_max = coords.max(axis=0)
+
+            # Append square bbox
+            bboxes.append((x_min, y_min, x_max, y_max))
 
         return bboxes
 

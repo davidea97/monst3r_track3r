@@ -112,7 +112,11 @@ def get_3D_model_from_scene(outdir, silent, scene, min_conf_thr=3, as_pointcloud
     # object_tracker = ObjectTracker(all_3d_obj_pts=object_pts3d, obj_msks=object_masks, imagelist=rgbimg, pts3d=pts3d)
     
     object_tracker = ObjectTrack(all_3d_obj_pts=object_pts3d, obj_msks=object_masks, imagelist=rgbimg, pts3d=pts3d)
-    object_tracker.extract_dino_features()
+    dino_descriptors_all = object_tracker.extract_dino_features()
+
+    # print("Length of dino descriptors: ", len(dino_descriptors_all))
+    # print("Length descriptors for each object: ", [len(dino_descriptors) for dino_descriptors in dino_descriptors_all])
+    # print("Shape dino descriptor 0: ", dino_descriptors_all[0][0].shape)
 
     # # Get Dino features from images
     # dino_valid_patch_features, valid_3d_pts = object_tracker._get_3d_dino_patch_features()

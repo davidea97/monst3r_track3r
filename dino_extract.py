@@ -33,10 +33,6 @@ class DINOExtract:
     self.model = dino.vit_large()
     state_dict_raw = torch.load(cpt_path, map_location='cpu')
 
-    # state_dict = {}
-    # for k, v in state_dict_raw.items():
-    #   state_dict[k.replace('blocks', 'blocks.0')] = v
-
     self.model.load_state_dict(state_dict_raw)
     self.model = self.model.to(self.device)
     self.model.eval()
@@ -58,15 +54,13 @@ class DINOExtract:
     Returns:
       features: (H // 14, W // 14, C) numpy array image features.
     """
+    print("Image shape: ", image.shape)
     image = self._resize_input_image(image)
-    print("IMAGE SHAPE after resize: ", image.shape)
+    print("Resized image shape: ", image.shape)
     image_processed = self._process_image(image)
-    print("IMAGE SHAPE after resize: ", image.shape)
     image_processed = image_processed.unsqueeze(0).float().to(self.device)
     features = self.extract_feature(image_processed)
-    print("FEATURES SHAPE: ", features.shape)
     features = features.squeeze(0).permute(1, 2, 0).cpu().numpy()
-    print("FEATURES SHAPE: ", features.shape)
     return features
 
   def _resize_input_image(
@@ -88,6 +82,7 @@ class DINOExtract:
     else:
       h_image_target = h_image
       w_image_target = w_image
+    
     h, w = (
         h_image_target // self.h_down_rate,
         w_image_target // self.w_down_rate,
@@ -209,8 +204,7 @@ def get_dino_descriptors(dino_features, keypoints, height, width, feature_dim):
       / tf.expand_dims(img_size, axis=0)
       * tf.expand_dims(feature_size, axis=0)
   )
-  print("IMG SIZE", img_size)
-  print("FEATURE SIZE", feature_size)
+
   dino_descriptors = []
   for kp in keypoints_feature:
     dino_descriptors.append(
