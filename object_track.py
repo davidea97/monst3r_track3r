@@ -7,7 +7,6 @@ from dust3r.cloud_opt.base_opt import c2w_to_tumpose
 from transformers import AutoProcessor, AutoModel
 from PIL import Image
 import dino_extract
-import superpoint_extract
 import tensorflow as tf
 import matplotlib.pyplot as plt
 import cv2
