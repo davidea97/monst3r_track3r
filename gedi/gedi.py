@@ -247,12 +247,11 @@ class GeDi:
 
 
     def compute(self, pts, pcd):
-
-        radii = self.r_lrf * torch.ones((len(pts)))
-
-        # out = ml3d.ops.radius_search(pcd, pts, radii,
-        #                              points_row_splits=torch.LongTensor([0, len(pcd)]),
-        #                              queries_row_splits=torch.LongTensor([0, len(pts)]))
+        min_pt = torch.min(pts, dim=0)[0]  # PyTorch min
+        max_pt = torch.max(pts, dim=0)[0]  # PyTorch max
+        diameter = torch.norm(max_pt - min_pt)
+        r_30 = 0.3 * diameter
+        radii = r_30 * torch.ones((len(pts)))
 
         out = self.radius_search_torch(pcd, pts, radii[0])
         
@@ -290,6 +289,74 @@ class GeDi:
                 f = self.gedi_net(patch.cuda())
 
             pcd_desc[i_start:i_end] = f.cpu().detach().numpy()[:i_end - i_start]
+
+        return pcd_desc
+    
+    def compute_multi_scale(self, pts, pcd):
+        """
+        Compute descriptors for multiple radii and stack them together.
+
+        Args:
+        - pts: (N, 3) PyTorch Tensor of query points.
+        - pcd: (M, 3) PyTorch Tensor of point cloud data.
+
+        Returns:
+        - pcd_desc: (N, R*D) NumPy array where:
+        - N = number of query points
+        - R = number of radii
+        - D = descriptor dimension per radius (e.g., 32)
+        """
+
+        # Compute diameter
+        min_pt = torch.min(pts, dim=0)[0]
+        max_pt = torch.max(pts, dim=0)[0]
+        diameter = torch.norm(max_pt - min_pt)
+
+        # Define multiple radii (e.g., 30%, 50%, 70% of the diameter)
+        radius_ratios = [0.2, 0.4, 0.6]  # Customize as needed
+        radii = [r * diameter for r in radius_ratios]
+
+        # Descriptor storage
+        num_radii = len(radii)
+        descriptor_dim = self.dim  # Assume self.dim is 32
+        pcd_desc = np.empty((len(pts), num_radii * descriptor_dim))  # (N, R*D)
+
+        for r_idx, radius in enumerate(radii):  
+
+            # Perform radius search
+            out = self.radius_search_torch(pcd, pts, radius)
+
+            for b in range(int(np.ceil(len(pts) / self.samples_per_batch))):
+                i_start = b * self.samples_per_batch
+                i_end = min((b + 1) * self.samples_per_batch, len(pts))
+
+                x = np.empty((i_end - i_start, 3, self.samples_per_patch_lrf))
+
+                j = 0
+                for i in range(i_start, i_end):
+                    _inds = out[i]  # Neighbor indices for current radius
+                    if len(_inds) == 0:
+                        print(f"[WARNING] No neighbors found for point {i} at radius {radius:.4f}.")
+                        _inds = np.array([np.random.randint(len(pcd)) for _ in range(self.samples_per_patch_lrf)])
+
+                    try:
+                        inds = np.random.choice(_inds, size=self.samples_per_patch_lrf, replace=False)
+                    except ValueError:
+                        inds = np.concatenate([_inds, np.random.choice(_inds, self.samples_per_patch_lrf - len(_inds), replace=True)])
+
+                    x[j] = pcd[inds].T
+                    j += 1
+
+                x = torch.Tensor(x)
+
+                # Compute LRF and descriptor
+                patch = self.lrf(pts[i_start:i_end], x)
+
+                with torch.no_grad():
+                    f = self.gedi_net(patch.cuda())
+
+                # Store descriptors for this radius in the correct slice
+                pcd_desc[i_start:i_end, r_idx * descriptor_dim : (r_idx + 1) * descriptor_dim] = f.cpu().detach().numpy()[:i_end - i_start]
 
         return pcd_desc
 

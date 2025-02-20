@@ -13,11 +13,19 @@ from dust3r.utils.device import to_cpu, to_numpy
 from dust3r.utils.goem_opt import DepthBasedWarping, OccMask, WarpImage, depth_regularization_si_weighted, tum_to_pose_matrix
 from third_party.raft import load_RAFT
 from dust3r.utils.file_utils import *
+from dust3r.utils.general_utils import *
 import matplotlib.pyplot as plt
+from scipy.spatial import cKDTree
+
+from object_tracker import DinoTracker
+
+
 
 from sam2.build_sam import build_sam2_video_predictor
 sam2_checkpoint = "third_party/sam2/checkpoints/sam2.1_hiera_large.pt"
 model_cfg = "configs/sam2.1/sam2.1_hiera_l.yaml"
+
+
 
 def smooth_L1_loss_fn(estimate, gt, mask, beta=1.0, per_pixel_thre=50.):
     loss_raw_shape = F.smooth_l1_loss(estimate*mask, gt*mask, beta=beta, reduction='none')
@@ -154,16 +162,28 @@ class PointCloudOptimizer(BasePCOptimizer):
             else:
                 self.sam2_dynamic_masks = None
 
+        # Dino feature extraction
+        self.object_tracker = DinoTracker(self.imgs, self.masks)
+        self.all_dino_descriptor, _ = self.object_tracker.extract_dino_features()
+        for i, dino_descriptor_obj in enumerate(self.all_dino_descriptor):
+            for j, dino_descriptor in enumerate(dino_descriptor_obj):
+                self.all_dino_descriptor[i][j] = to_torch(dino_descriptor, self.device)
+            
+
     def get_flow(self, sintel_ckpt=False): #TODO: test with gt flow
         print('precomputing flow...')
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
         get_valid_flow_mask = OccMask(th=3.0) # Default 3
+        masks = self.masks
+
         pair_imgs = [np.stack(self.imgs)[self._ei], np.stack(self.imgs)[self._ej]]
+        if masks is not None:
+            pair_masks = [np.stack(masks)[self._ei], np.stack(masks)[self._ej]]
 
         flow_net = load_RAFT() if sintel_ckpt else load_RAFT("third_party/RAFT/models/Tartan-C-T-TSKH-spring540x960-M.pth")
         flow_net = flow_net.to(device)
         flow_net.eval()
-
+        
         with torch.no_grad():
             chunk_size = 12
             flow_ij = []
@@ -173,12 +193,28 @@ class PointCloudOptimizer(BasePCOptimizer):
                 end_idx = min(i + chunk_size, num_pairs)
                 imgs_ij = [torch.tensor(pair_imgs[0][i:end_idx]).float().to(device),
                         torch.tensor(pair_imgs[1][i:end_idx]).float().to(device)]
+                
+                # if masks is not None:
+                #     masks_ij = [torch.tensor(pair_masks[0][i:end_idx]).float().to(device),
+                #             torch.tensor(pair_masks[1][i:end_idx]).float().to(device)]
+                #     masks_ij_0 = masks_ij[0].unsqueeze(-1).expand(-1, -1, -1, 3)
+                #     masks_ij_1 = masks_ij[1].unsqueeze(-1).expand(-1, -1, -1, 3)
+                #     imgs_ij[0] *= masks_ij_0
+                #     imgs_ij[1] *= masks_ij_1
+
+
                 flow_ij_chunk = flow_net(imgs_ij[0].permute(0, 3, 1, 2) * 255, 
                                      imgs_ij[1].permute(0, 3, 1, 2) * 255, 
                                      iters=20, test_mode=True)[1]
                 flow_ji_chunk = flow_net(imgs_ij[1].permute(0, 3, 1, 2) * 255, 
                                         imgs_ij[0].permute(0, 3, 1, 2) * 255, 
                                         iters=20, test_mode=True)[1]
+                # Apply the mask to the flow
+                # if masks is not None:
+                #     mask_flow_ij = masks_ij[0].unsqueeze(1).expand(-1, 2, -1, -1)  # Mask for flow i → j
+                #     mask_flow_ji = masks_ij[1].unsqueeze(1).expand(-1, 2, -1, -1)  # Mask for flow j → i
+                #     flow_ij_chunk *= mask_flow_ij  # Masking flow i → j with image i mask
+                #     flow_ji_chunk *= mask_flow_ji  # Masking flow j → i with image j mask
 
                 flow_ij.append(flow_ij_chunk)
                 flow_ji.append(flow_ji_chunk)
@@ -270,8 +306,6 @@ class PointCloudOptimizer(BasePCOptimizer):
             for i in range(len(self.masks)):
                 
                 self.dynamic_masks[i] = torch.from_numpy(self.masks[i])
-
-                
 
 
     def get_object_masks(self):
@@ -625,7 +659,6 @@ class PointCloudOptimizer(BasePCOptimizer):
             return self.get_depthmaps_non_batch()
 
     def get_object_pts3d(self, masks_list, rel_ptmaps):
-        masked_pts_list = []
         masked_pts_dict = {}
         for i, mask in enumerate(masks_list):
             unique_masks = np.unique(mask)  # Find unique values in mask_flat
@@ -705,6 +738,8 @@ class PointCloudOptimizer(BasePCOptimizer):
                 ccam2pcam[i][:3, 3] *= scale_factor
         return ccam2pcam
     
+    
+
     def calibration_loss(self, cam2w, robot_poses, scale_factor, quat_X, trans_X):
         """
         Loss function exploiting robot kinematics with quaternion rotation representation.
@@ -780,19 +815,111 @@ class PointCloudOptimizer(BasePCOptimizer):
         
         return loss
 
+    def estimate_rigid_transform(self, src_pts, tgt_pts, src_feats, tgt_feats):
+        """
+        Stima la trasformazione rigida tra due nuvole di punti usando feature matching.
+        
+        Args:
+            src_pts (torch.Tensor): Nuvola di punti sorgente (N, 3)
+            tgt_pts (torch.Tensor): Nuvola di punti target (M, 3)
+            src_feats (torch.Tensor): Feature DINO per src_pts (N, D)
+            tgt_feats (torch.Tensor): Feature DINO per tgt_pts (M, D)
+
+        Returns:
+            R (torch.Tensor): Rotazione stimata (3,3)
+            T (torch.Tensor): Traslazione stimata (3,)
+        """
+        src_pts = src_pts.cpu().numpy()
+        tgt_pts = tgt_pts.cpu().numpy()
+        src_feats = src_feats.cpu().numpy()
+        tgt_feats = tgt_feats.cpu().numpy()
+        
+        # Trova le corrispondenze con KDTree
+        print("Start KDTree")
+        tree = cKDTree(tgt_feats)
+        print("End KDTree")
+        dists, indices = tree.query(src_feats, k=1)
+        
+        # Seleziona i punti corrispondenti
+        matched_src_pts = src_pts
+        matched_tgt_pts = tgt_pts[indices]
+
+        # Centroidi
+        centroid_src = np.mean(matched_src_pts, axis=0)
+        centroid_tgt = np.mean(matched_tgt_pts, axis=0)
+
+        # Centra i punti
+        src_pts_centered = matched_src_pts - centroid_src
+        tgt_pts_centered = matched_tgt_pts - centroid_tgt
+
+        # SVD per trovare R
+        H = np.dot(src_pts_centered.T, tgt_pts_centered)
+        U, S, Vt = np.linalg.svd(H)
+        R = np.dot(Vt.T, U.T)
+
+        # Assicuriamoci che sia una rotazione valida
+        if np.linalg.det(R) < 0:
+            Vt[-1, :] *= -1
+            R = np.dot(Vt.T, U.T)
+
+        # Calcola la traslazione
+        T = centroid_tgt - np.dot(R, centroid_src)
+
+        return torch.tensor(R, dtype=torch.float32), torch.tensor(T, dtype=torch.float32)
+
+    def object_trajectory_loss(self, proj_obj_pts3d, all_dino_descriptor, weight=1.0):
+        """
+        Ottimizza la traiettoria 3D dell'oggetto minimizzando la distanza tra le pose successive.
+        
+        Args:
+            proj_obj_pts3d: Lista di nuvole di punti 3D dell'oggetto (B, N, 3)
+            all_dino_descriptor: Lista delle feature DINO corrispondenti ai punti 3D (B, N, D)
+            weight: Peso della loss
+
+        Returns:
+            trajectory_loss: Penalità per incoerenza della traiettoria
+        """
+        loss = 0
+        device = proj_obj_pts3d[0].device
+        print("Device: ", device)
+        for i in range(len(proj_obj_pts3d) - 1):
+            
+            print("Debug: ", i)
+            src_pts = proj_obj_pts3d[i].to(device)  # Move to same device
+            tgt_pts = proj_obj_pts3d[i + 1].to(device)
+            print("DEBUG")
+            src_feats = all_dino_descriptor[i]
+            tgt_feats = all_dino_descriptor[i + 1]
+
+
+            # Stima la trasformazione rigida tra le due pose
+            R, T = self.estimate_rigid_transform(src_pts, tgt_pts, src_feats, tgt_feats)
+            print("R: ", R)
+            print("T: ", T)
+            R, T = R.to(device), T.to(device)  # Move R and T to same device
+
+            # Trasforma i punti della vista i nella vista i+1
+            src_pts_transformed = (R @ src_pts.T).T + T
+
+            # Chamfer Distance tra punti trasformati e punti reali nella vista successiva
+            loss += chamfer_loss(src_pts_transformed, tgt_pts)
+            print("Loss: ", loss)
+        return weight * loss / (len(proj_obj_pts3d) - 1)
+
 
     def forward_batchify(self, epoch=9999, niter=None):
         pw_poses = self.get_pw_poses()  # cam-to-world
 
         pw_adapt = self.get_adaptors().unsqueeze(1)
         
-        proj_pts3d, _ = self.get_pts3d(raw=True)
-
+        all_dino_descriptor = self.all_dino_descriptor
+        proj_pts3d, proj_obj_pts3d = self.get_pts3d(raw=True)
+                                     
         # rotate pairwise prediction according to pw_poses
         aligned_pred_i = geotrf(pw_poses, pw_adapt * self._stacked_pred_i)
         aligned_pred_j = geotrf(pw_poses, pw_adapt * self._stacked_pred_j)
 
-        # compute the less
+        # compute the loss
         li = self.dist(proj_pts3d[self._ei], aligned_pred_i, weight=self._weight_i).sum() / self.total_area_i
         lj = self.dist(proj_pts3d[self._ej], aligned_pred_j, weight=self._weight_j).sum() / self.total_area_j
 
@@ -836,8 +963,6 @@ class PointCloudOptimizer(BasePCOptimizer):
         else:
             depth_prior_loss = 0
 
-        # DAVIDE CALIBRATION LOSS
-        # Calibration loss
         robot_poses = self._get_robot_poses()
         
         quat_X = self._get_quat_X()
@@ -846,9 +971,6 @@ class PointCloudOptimizer(BasePCOptimizer):
         scale_factor = self._get_scale_factor()
         if scale_factor is not None:
             scale_factor = torch.abs(scale_factor)
-        
-        # if robot_poses is None or scale_factor is None or quat_X is None or trans_X is None:
-        #     print("Uno o più parametri di calibrazione sono None")
 
         if quat_X is not None:
             calibration_loss_value = self.calibration_loss(cam2w, robot_poses, scale_factor, quat_X, trans_X)
@@ -860,25 +982,18 @@ class PointCloudOptimizer(BasePCOptimizer):
             weight_calib = 0
             calibration_loss_value = 0
 
-        # if calibration_loss_value is None:
-        #     raise ValueError("calibration_loss_value è None")
         
         # Manually set to 0
         # self.temporal_smoothing_weight = 0 # It enabes the temporal smoothing loss; i.e., the similarity between adjacent frames
         if self.masks is not None:
             self.flow_loss_weight = 0
-
+        # obj_traj_loss = self.object_trajectory_loss(proj_obj_pts3d[0], all_dino_descriptor[0], weight=0.1)
+        
         loss = (li + lj) * 1 + self.temporal_smoothing_weight * temporal_smoothing_loss + \
-                self.flow_loss_weight * flow_loss + self.depth_regularize_weight * depth_prior_loss + weight_calib* calibration_loss_value
-        # print(f"Weight calibration: {weight_calib}")
-        # print(f'loss: {loss.item()}')
+                self.flow_loss_weight * flow_loss + self.depth_regularize_weight * depth_prior_loss + weight_calib* calibration_loss_value 
+        
         if quat_X is not None:
             quat_X.data = quat_X.data / quat_X.data.norm()
-        # print(f"Calibration loss: {calibration_loss_value}")
-        # print(f"Quat_X: {quat_X}")
-        # print(f"Trans X: {trans_X}")
-        # print(f"Scale factor: {scale_factor}")
-        # print(f"Weights: {weight_calib}")
         return loss
     
     def forward_non_batchify(self, epoch=9999):

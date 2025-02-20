@@ -159,3 +159,10 @@ init_dynamic_masks
 ref_dynamic_masks
 
 object_0*
+
+mast3r/
+models/
+output_images_DINO/
+output_images_matches_0/
+output_video.mp4
+superpoint_extract.py

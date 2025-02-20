@@ -24,6 +24,7 @@ from dust3r.utils.general_utils import generate_image_list, generate_mask_list, 
 from dust3r.utils.file_utils import *
 from dust3r.cloud_opt import global_aligner, GlobalAlignerMode
 from dust3r.utils.viz_demo import convert_scene_output_to_glb, get_dynamic_mask_from_pairviewer
+from mast3r.mast3r import forward_mast3r, convert_dust3r_pairs_naming
 import shutil
 import matplotlib.pyplot as pl
 import open3d as o3d
@@ -33,10 +34,9 @@ from PIL import Image
 
 sys.path.append(os.path.abspath("Grounded_SAM_2"))
 from Grounded_SAM_2.sam2_mask_tracking import MaskGenerator 
-from object_tracker import ObjectTracker
 from object_track import ObjectTrack
 
-# from .utils.general_utils import generate_image_list, generate_mask_list, read_intrinsics
+from mast3r.model import AsymmetricMASt3R
 
 pl.ion()
 torch.backends.cuda.matmul.allow_tf32 = True  # for gpu >= Ampere and pytorch >= 1.12
@@ -110,10 +110,16 @@ def get_3D_model_from_scene(outdir, silent, scene, min_conf_thr=3, as_pointcloud
 
     # Add the tracking part
     # object_tracker = ObjectTracker(all_3d_obj_pts=object_pts3d, obj_msks=object_masks, imagelist=rgbimg, pts3d=pts3d)
-    
-    object_tracker = ObjectTrack(all_3d_obj_pts=object_pts3d, obj_msks=object_masks, imagelist=rgbimg, pts3d=pts3d)
-    dino_descriptors_all = object_tracker.extract_dino_features()
 
+    object_tracker = ObjectTrack(obj_msks=object_masks, all_3d_obj_pts=object_pts3d, imagelist=rgbimg, pts3d=pts3d)
+    all_dino_descriptors, dino_images, mask_coords, all_sp_features, all_3d_features = object_tracker.extract_dino_features()
+    all_gedi_descriptors = object_tracker.extract_gedi_features(all_3d_features)
+
+    obj_transformation, obj_obj2world = object_tracker._obj_track(all_dino_descriptors, all_gedi_descriptors=all_gedi_descriptors, all_sp_features=all_sp_features, all_3d_features=all_3d_features)
+    for i, cam2w_object in enumerate(obj_obj2world):
+        print("Length of object poses: ", len(cam2w_object))
+        save_obj_traj = object_tracker.save_obj_poses(f'{outdir}/obj_traj_{i}.txt', obj_obj2world[i])
+        
     # print("Length of dino descriptors: ", len(dino_descriptors_all))
     # print("Length descriptors for each object: ", [len(dino_descriptors) for dino_descriptors in dino_descriptors_all])
     # print("Shape dino descriptor 0: ", dino_descriptors_all[0][0].shape)
@@ -128,11 +134,107 @@ def get_3D_model_from_scene(outdir, silent, scene, min_conf_thr=3, as_pointcloud
     # dino_transformation, dino_cam2w = object_tracker._get_dino_obj_track(valid_3d_pts_t, dino_valid_patch_features)
     # for i, dino_cam2w_object in enumerate(dino_cam2w):
     #     save_obj_traj = object_tracker.save_obj_poses(f'{outdir}/obj_traj_{i}.txt', dino_cam2w[i])
-            
-    return convert_scene_output_to_glb(outdir, rgbimg, pts3d, msk, focals, cams2world, as_pointcloud=as_pointcloud,
+    
+    glb = convert_scene_output_to_glb(outdir, rgbimg, pts3d, msk, focals, cams2world, as_pointcloud=as_pointcloud,
                                         transparent_cams=transparent_cams, cam_size=cam_size, show_cam=show_cam, silent=silent, save_name=save_name,
-                                        cam_color=cam_color, all_object_pts3d=object_pts3d, all_msk_obj=object_masks, tracking_transformation=None)
+                                        cam_color=cam_color, all_object_pts3d=object_pts3d, all_msk_obj=object_masks, tracking_transformation=obj_obj2world)
+    return glb, dino_images[0]
 
+
+# def draw_matches(img1, img2, corres, save_path, mask1=None, mask2=None):
+
+#     if isinstance(img1, torch.Tensor):
+#         img1 = img1.squeeze(0).permute(1, 2, 0).cpu().numpy()
+#     if isinstance(img2, torch.Tensor):
+#         img2 = img2.squeeze(0).permute(1, 2, 0).cpu().numpy()
+    
+#     img1 = (img1 - img1.min()) / (img1.max() - img1.min())
+#     img2 = (img2 - img2.min()) / (img2.max() - img2.min())
+
+#     img1 = (img1 * 255).astype(np.uint8)
+#     img2 = (img2 * 255).astype(np.uint8)
+
+#     h1, w1, _ = img1.shape
+#     h2, w2, _ = img2.shape
+#     img_match = np.zeros((max(h1, h2), w1 + w2, 3), dtype=np.uint8)
+#     img_match[:h1, :w1] = img1
+#     img_match[:h2, w1:w1 + w2] = img2
+
+#     xy1, xy2, conf = corres  
+#     xy1 = xy1.cpu().numpy().astype(int)
+#     xy2 = xy2.cpu().numpy().astype(int)
+#     conf = conf.cpu().numpy() 
+#     xy2[:, 0] += w1  
+
+#     k = 0
+#     for (x1, y1), (x2, y2), score in zip(xy1, xy2, conf):
+#         # Random color based on score
+#         color = (0, 255, 0) if score > 0.5 else (0, 0, 255) 
+#         cv2.line(img_match, (x1, y1), (x2, y2), color, 1)
+#         cv2.circle(img_match, (x1, y1), 2, color, -1)
+#         cv2.circle(img_match, (x2, y2), 2, color, -1)
+#         k += 1
+
+#     img_match = cv2.cvtColor(img_match, cv2.COLOR_RGB2BGR)
+#     cv2.imwrite(save_path, img_match)
+
+
+# def draw_matches(img1, img2, corres, mask1, mask2, save_path=None):
+#     """ Draw matches only for pixels inside the provided masks, using random colors. """
+
+#     # Convert tensors to numpy if necessary
+#     if isinstance(img1, torch.Tensor):
+#         img1 = img1.squeeze(0).permute(1, 2, 0).cpu().numpy()
+#     if isinstance(img2, torch.Tensor):
+#         img2 = img2.squeeze(0).permute(1, 2, 0).cpu().numpy()
+
+#     # Normalize images
+#     img1 = (img1 - img1.min()) / (img1.max() - img1.min())
+#     img2 = (img2 - img2.min()) / (img2.max() - img2.min())
+#     img1 = (img1 * 255).astype(np.uint8)
+#     img2 = (img2 * 255).astype(np.uint8)
+
+#     # Ensure masks are numpy arrays
+#     if isinstance(mask1, torch.Tensor):
+#         mask1 = mask1.cpu().numpy()
+#     if isinstance(mask2, torch.Tensor):
+#         mask2 = mask2.cpu().numpy()
+
+#     # Create concatenated image
+#     h1, w1, _ = img1.shape
+#     h2, w2, _ = img2.shape
+#     img_match = np.zeros((max(h1, h2), w1 + w2, 3), dtype=np.uint8)
+#     img_match[:h1, :w1] = img1
+#     img_match[:h2, w1:w1 + w2] = img2
+
+#     # Extract correspondences
+#     xy1, xy2, conf = corres  
+#     xy1 = xy1.cpu().numpy().astype(int)
+#     xy2 = xy2.cpu().numpy().astype(int)
+#     conf = conf.cpu().numpy()
+#     xy2[:, 0] += w1  # Adjust x-coordinates of img2
+
+#     # Filter correspondences using masks
+#     valid_matches = []
+#     for (x1, y1), (x2, y2), score in zip(xy1, xy2, conf):
+#         print(f"First pixel: ({x1}, {y1}), Second pixel: ({x2}, {y2})")
+#         if mask1[y1, x1] > 0 and mask2[y2, x2 - w1] > 0:  # Check if in mask
+#             valid_matches.append(((x1, y1), (x2, y2), score))
+
+#     # Draw correspondences with random colors
+#     correspondences = 0
+#     for (x1, y1), (x2, y2), score in valid_matches:
+        
+#         color = tuple(np.random.randint(0, 255, 3).tolist())  # Generate random color
+#         cv2.line(img_match, (x1, y1), (x2, y2), color, 1)
+#         cv2.circle(img_match, (x1, y1), 2, color, -1)
+#         cv2.circle(img_match, (x2, y2), 2, color, -1)
+#         correspondences += 1
+#     print(f"Number of valid correspondences: {correspondences}")
+#     # Convert RGB to BGR for OpenCV saving
+#     img_match = cv2.cvtColor(img_match, cv2.COLOR_RGB2BGR)
+#     cv2.imwrite(save_path, img_match)
+#     print(f"Saved match image: {save_path}")
 
 def get_reconstructed_scene(args, outdir, model, device, silent, image_size, filelist, intrinsic_params, dist_coeffs, mask_list, robot_poses, schedule, niter, min_conf_thr,
                             as_pointcloud, mask_sky, clean_depth, transparent_cams, cam_size, show_cam, scenegraph_type, winsize, refid, 
@@ -175,14 +277,35 @@ def get_reconstructed_scene(args, outdir, model, device, silent, image_size, fil
     if len(imgs) == 1:
         imgs = [imgs[0], copy.deepcopy(imgs[0])]
         imgs[1]['idx'] = 1
+
+    print("WINSIZE: ", winsize)
     if scenegraph_type == "swin" or scenegraph_type == "swinstride" or scenegraph_type == "swin2stride":
         scenegraph_type = scenegraph_type + "-" + str(winsize) + "-noncyclic"
     elif scenegraph_type == "oneref":
         scenegraph_type = scenegraph_type + "-" + str(refid)
 
     pairs = make_pairs(imgs, scene_graph=scenegraph_type, prefilter=None, symmetrize=True)
+
     output = inference(pairs, model, device, batch_size=args.batch_size, verbose=not silent)
-    
+
+    # # Add Mast3r inference to extract correspondences
+    # pairs_in = convert_dust3r_pairs_naming(filelist, pairs)
+    # weights_path_mast3r = 'checkpoints/MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric.pth'
+    # mast3r_model = AsymmetricMASt3R.from_pretrained(weights_path_mast3r).to(args.device)
+    # corres, matching_score = forward_mast3r(pairs_in, mast3r_model, msks, device=device)
+    # os.makedirs("matches", exist_ok=True)
+    # for img1, img2 in pairs_in:
+    #     idx1 = img1['idx']
+    #     idx2 = img2['idx']
+    #     img1 = img1['img'].to(device, non_blocking=True)
+    #     img2 = img2['img'].to(device, non_blocking=True)
+
+    #     save_path = f"matches/match_{idx1}_{idx2}.png"        
+    #     print(f"Processing pair {idx1} and {idx2}...")
+    #     draw_matches(img1, img2, corres, mask1=msks[idx1], mask2=msks[idx2], save_path=save_path) 
+
+
+
     if len(imgs) > 2:
         mode = GlobalAlignerMode.PointCloudOptimizer  
         scene = global_aligner(output, device=device, mode=mode, verbose=not silent, shared_focal = shared_focal, filelist=filelist, intrinsic_params=intrinsic_params, dist_coeffs=dist_coeffs, robot_poses=robot_poses, masks=msks, temporal_smoothing_weight=temporal_smoothing_weight, translation_weight=translation_weight,
@@ -192,7 +315,7 @@ def get_reconstructed_scene(args, outdir, model, device, silent, image_size, fil
         mode = GlobalAlignerMode.PairViewer
         scene = global_aligner(output, device=device, mode=mode, verbose=not silent)
     
-    lr = 0.2
+    lr = 0.02
 
     if mode == GlobalAlignerMode.PointCloudOptimizer:
         loss = scene.compute_global_alignment(init='mst', niter=niter, schedule=schedule, lr=lr)
@@ -217,9 +340,9 @@ def get_reconstructed_scene(args, outdir, model, device, silent, image_size, fil
         shutil.rmtree(save_folder)
     os.makedirs(save_folder, exist_ok=True)
 
-    outfile = get_3D_model_from_scene(save_folder, silent, scene, min_conf_thr, as_pointcloud, mask_sky,
+    outfile, dino_images = get_3D_model_from_scene(save_folder, silent, scene, min_conf_thr, as_pointcloud, mask_sky,
                             clean_depth, transparent_cams, cam_size, show_cam, parameters_X=parameters_X, object_masks=msks)
-
+    
     poses = scene.save_tum_poses(f'{save_folder}/pred_traj.txt')
     K = scene.save_intrinsics(f'{save_folder}/pred_intrinsics.txt')
     depth_maps = scene.save_depth_maps(save_folder)
@@ -248,15 +371,13 @@ def get_reconstructed_scene(args, outdir, model, device, silent, image_size, fil
     for i in range(len(rgbimg)):
         imgs.append(rgbimg[i])
         imgs.append(rgb(depths[i]))
-        imgs.append(rgb(confs[i]))
-        imgs.append(rgb(init_confs[i]))
+        dino_image = cv2.cvtColor(dino_images[i], cv2.COLOR_RGB2BGR)
+        imgs.append(dino_image)
 
     # if two images, and the shape is same, we can compute the dynamic mask
     if len(rgbimg) == 2 and rgbimg[0].shape == rgbimg[1].shape:
         motion_mask_thre = 0.35 # Default 0.35
         error_map = get_dynamic_mask_from_pairviewer(scene, both_directions=True, output_dir=args.output_dir, motion_mask_thre=motion_mask_thre)
-        # imgs.append(rgb(error_map))
-        # apply threshold on the error map
         normalized_error_map = (error_map - error_map.min()) / (error_map.max() - error_map.min())
         error_map_max = normalized_error_map.max()
         error_map = cmap(normalized_error_map/error_map_max)
@@ -274,8 +395,9 @@ def set_scenegraph_options(inputfiles, winsize, refid, scenegraph_type):
     else:
         num_files = len(inputfiles) if inputfiles is not None else 1
     max_winsize = max(1, math.ceil((num_files-1)/2))
+    
     if scenegraph_type == "swin" or scenegraph_type == "swin2stride" or scenegraph_type == "swinstride":
-        winsize = gradio.Slider(label="Scene Graph: Window Size", value=min(max_winsize,5),
+        winsize = gradio.Slider(label="Scene Graph: Window Size", value=min(max_winsize,15),
                                 minimum=1, maximum=max_winsize, step=1, visible=True)
         refid = gradio.Slider(label="Scene Graph: Id", value=0, minimum=0,
                               maximum=num_files-1, step=1, visible=False)
@@ -316,7 +438,6 @@ def get_reconstructed_scene_realtime(args, model, device, silent, image_size, fi
     save_folder = f'{args.output_dir}/{seq_name}'  #default is 'demo_tmp/NULL'
     os.makedirs(save_folder, exist_ok=True)
 
-
     view1, view2, pred1, pred2 = output['view1'], output['view2'], output['pred1'], output['pred2']
     pts1 = pred1['pts3d'].detach().cpu().numpy()
     pts2 = pred2['pts3d_in_other_view'].detach().cpu().numpy()
@@ -350,18 +471,11 @@ def main_demo(tmpdirname, model, device, image_size, server_name, server_port, s
     input_file_paths = [file for file in input_files]
     formatted_list = "\n".join(input_file_paths)
     print("Formatted list: ", formatted_list)
-    with gradio.Blocks(css=""".gradio-container {margin: 0 !important; min-width: 100%};""", title="MonST3R Demo") as demo:
+    with gradio.Blocks(css=""".gradio-container {margin: 0 !important; min-width: 100%};""", title="MonST3R Track Demo") as demo:
         # scene state is save so that you can change conf_thr, cam_size... without rerunning the inference
         scene = gradio.State(None)
         gradio.HTML(f'<h2 style="text-align: center;">MonST3R Track3r Demo</h2>')
         with gradio.Column():
-            # Display the provided input files
-            # selected_image_paths = gradio.Textbox(
-            #     label="Selected Image Paths",
-            #     value=formatted_list,
-            #     lines=5,  # Adjust to show more lines
-            #     interactive=False
-            # )
 
             # Placeholder for dynamically updated file input (disabled)
             inputfiles = gradio.File(
@@ -422,7 +536,7 @@ def main_demo(tmpdirname, model, device, image_size, server_name, server_port, s
                 num_frames = gradio.Slider(label="Num Frames", value=100, minimum=0, maximum=200, step=1)
 
             outmodel = gradio.Model3D()
-            outgallery = gradio.Gallery(label='rgb,depth,confidence, init_conf', columns=4, height="100%")
+            outgallery = gradio.Gallery(label='rgb,depth,dino', columns=3, height="100%")
 
             # events
             scenegraph_type.change(set_scenegraph_options,

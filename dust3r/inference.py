@@ -64,7 +64,6 @@ def loss_of_one_batch(batch, model, criterion, device, symmetrize_batch=False, u
             if name in ignore_keys:
                 continue
             view[name] = view[name].to(device, non_blocking=True)
-            # print("Name: ", name)
 
     if symmetrize_batch:
         view1, view2 = make_batch_symmetric(batch)

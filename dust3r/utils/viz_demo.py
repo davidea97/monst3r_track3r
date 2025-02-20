@@ -43,9 +43,8 @@ def convert_scene_output_to_glb(outdir, imgs, pts3d, mask, focals, cams2world, c
                     previous_transform = np.eye(4)  # Start with identity
                     for j, pts_3d_obj in enumerate(object_pts3d):
                         obj_frame = trimesh.creation.axis(origin_size=0.005, axis_length=0.1)
-                        obj_transform = np.eye(4)
                         # Compute the new centroid by applying the transformation to the previous centroid
-                        obj_transform = previous_transform @ tracking_transformation[i][j]
+                        obj_transform = tracking_transformation[i][j]
                         
                         obj_frame.apply_transform(obj_transform)
                         scene.add_geometry(obj_frame)
@@ -53,6 +52,23 @@ def convert_scene_output_to_glb(outdir, imgs, pts3d, mask, focals, cams2world, c
                         # Update the previous transform to be used in the next iteration
                         previous_transform = obj_transform
 
+                    # for j, pts_3d_obj in enumerate(object_pts3d):
+                    #     obj_frame = trimesh.creation.axis(origin_size=0.005, axis_length=0.1)
+                    #     obj_transform = np.eye(4)
+                    #     # Compute the new centroid by applying the transformation to the previous centroid
+                    #     if j == 0:
+                    #         obj_transform = previous_transform @ tracking_transformation[i][j]
+                    #         obj_frame.apply_transform(obj_transform)
+                    #         scene.add_geometry(obj_frame)
+
+                    #         # Update the previous transform to be used in the next iteration
+                    #         previous_transform = obj_transform
+                    #     else:
+                    #         obj_transform = previous_transform @ tracking_transformation[i][j]
+                    #         obj_frame.apply_transform(obj_transform)
+                    #         scene.add_geometry(obj_frame)
+                        
+                        
             pct_updated = trimesh.PointCloud(valid_pts, colors=valid_col)
             scene.add_geometry(pct_updated)
         else:

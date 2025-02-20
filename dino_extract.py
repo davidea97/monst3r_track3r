@@ -54,9 +54,7 @@ class DINOExtract:
     Returns:
       features: (H // 14, W // 14, C) numpy array image features.
     """
-    print("Image shape: ", image.shape)
     image = self._resize_input_image(image)
-    print("Resized image shape: ", image.shape)
     image_processed = self._process_image(image)
     image_processed = image_processed.unsqueeze(0).float().to(self.device)
     features = self.extract_feature(image_processed)
@@ -64,7 +62,7 @@ class DINOExtract:
     return features
 
   def _resize_input_image(
-      self, image: np.ndarray, interpolation=cv2.INTER_LINEAR
+      self, image: np.ndarray, interpolation=cv2.INTER_CUBIC # default cv2.LINEAR
   ):
     """Resizes image such that both dimensions are divisble by down_rate."""
     h_image, w_image = image.shape[:2]

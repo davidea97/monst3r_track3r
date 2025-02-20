@@ -7,6 +7,7 @@ import torch
 
 def make_pairs(imgs, scene_graph='complete', prefilter=None, symmetrize=True, force_symmetrize=False):
     pairs = []
+    print(">> Scene graph: ", scene_graph)
     if scene_graph == 'complete':  # complete graph
         for i in range(len(imgs)):
             for j in range(i):
@@ -19,7 +20,7 @@ def make_pairs(imgs, scene_graph='complete', prefilter=None, symmetrize=True, fo
             winsize = 3
         pairsid = set()
         if scene_graph.startswith('swinstride'):
-            stride = 2
+            stride = 1
         elif scene_graph.startswith('swin2stride'):
             stride = 3
         else:
@@ -65,7 +66,6 @@ def make_pairs(imgs, scene_graph='complete', prefilter=None, symmetrize=True, fo
 
     if (symmetrize and not scene_graph.startswith('oneref') and not scene_graph.startswith('swin-1')) or len(imgs) == 2 or force_symmetrize:
         pairs += [(img2, img1) for img1, img2 in pairs]
-
     # now, remove edges
     if isinstance(prefilter, str) and prefilter.startswith('seq'):
         pairs = filter_pairs_seq(pairs, int(prefilter[3:]))
